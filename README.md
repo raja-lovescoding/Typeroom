@@ -1,1 +1,3 @@
 # Blinkly
+
+renamed to typeroom
