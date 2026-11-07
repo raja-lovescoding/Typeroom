@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: typeroom
+      POSTGRES_PASSWORD: typeroom
+      POSTGRES_DB: typeroom
+    volumes: [typeroom-postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U typeroom -d typeroom"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  server:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "corepack enable && pnpm install && pnpm --filter @typeroom/server dev"
+    volumes:
+      - .:/app
+      - typeroom-node-modules:/app/node_modules
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      CLIENT_ORIGIN: http://localhost:5173
+      DATABASE_URL: postgres://typeroom:typeroom@postgres:5432/typeroom
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports: ["3000:3000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+  web:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "corepack enable && pnpm install && pnpm --filter @typeroom/web dev"
+    volumes:
+      - .:/app
+      - typeroom-node-modules:/app/node_modules
+    environment:
+      VITE_SOCKET_URL: http://localhost:3000
+    ports: ["5173:80"]
+    depends_on:
+      server: { condition: service_healthy }
+volumes:
+  typeroom-postgres:
+  typeroom-node-modules:
