@@ -67,6 +67,18 @@ describe('authoritative scoring', () => {
     for (let index = 0; index < 25; index += 1) manager.handleKeystroke(burstRoom, 'burst', 'x', 0, 2_001);
     expect(manager.handleKeystroke(burstRoom, 'burst', 'x', 0, 2_001).reason).toBe('burst');
   });
+
+  it('lets a player recover from wrong characters without advancing the caret', () => {
+    const manager = new RoomManager();
+    const room = manager.createRoom({ playerId: 'human', username: 'Human', token: 'secret-token-123458', connected: true, isBot: false });
+    manager.startRace(room, 'ab', 1_000, 0);
+    manager.beginRace(room, 1_000);
+    expect(manager.handleKeystroke(room, 'human', 'x', 0, 1_001).accepted).toBe(true);
+    expect(room.players.get('human')?.position).toBe(0);
+    expect(manager.handleKeystroke(room, 'human', 'a', 0, 1_002).accepted).toBe(true);
+    expect(manager.handleKeystroke(room, 'human', 'b', 1, 1_003).finished).toBe(true);
+    expect(manager.results(room, 1_003)[0]?.accuracy).toBe(67);
+  });
 });
 
 describe('bot timing', () => {

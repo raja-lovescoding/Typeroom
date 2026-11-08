@@ -120,6 +120,7 @@ function Lobby({ room, playerId, onStart, onLeave }: { room: RoomStateMessage; p
 function Race({ playerId, countdown, progress }: { playerId: string; countdown: { startsInMs: number; text: string } | undefined; progress: RaceProgressPayload | undefined }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [localIndex, setLocalIndex] = useState(0);
+  const [incorrectIndexes, setIncorrectIndexes] = useState<Set<number>>(new Set());
   const [seconds, setSeconds] = useState(Math.ceil((countdown?.startsInMs ?? 0) / 1000));
   const text = progress?.text ?? countdown?.text ?? '';
   const me = progress?.players.find((player) => player.playerId === playerId);
@@ -130,11 +131,22 @@ function Race({ playerId, countdown, progress }: { playerId: string; countdown: 
     const value = event.target.value;
     if (!value) return;
     const char = value[value.length - 1] ?? '';
-    socket.emit(CLIENT_EVENTS.KEYSTROKE, { char, index: localIndex });
-    setLocalIndex((index) => index + 1);
+    const index = localIndex;
+    socket.emit(CLIENT_EVENTS.KEYSTROKE, { char, index });
+    if (char === text[index]) {
+      setIncorrectIndexes((indexes) => {
+        const next = new Set(indexes);
+        next.delete(index);
+        return next;
+      });
+      setLocalIndex((current) => current + 1);
+    } else {
+      setIncorrectIndexes((indexes) => new Set(indexes).add(index));
+    }
     event.target.value = '';
   };
-  return <main className="shell race" onClick={() => inputRef.current?.focus()}><div className="race-header"><span>{me?.wpm.toFixed(1) ?? '0.0'} WPM</span><span>{me?.accuracy ?? 100}% accuracy</span></div>{countdown && seconds > 0 && <div className="countdown">{seconds}</div>}<div className="track">{text.split('').map((char, index) => <span key={`${index}-${char}`} className={index < (me?.position ?? localIndex) ? 'correct' : index === (me?.position ?? localIndex) ? 'caret' : ''}>{char}</span>)}</div><div className="ghosts">{progress?.players.filter((player) => player.playerId !== playerId).map((player) => <span key={player.playerId} className={`ghost ${player.status === 'disconnected' ? 'offline' : ''}`} style={{ left: `${text.length ? (player.position / text.length) * 100 : 0}%` }}>{player.username}</span>)}</div><input ref={inputRef} className="capture" autoFocus onChange={submit} /></main>;
+  const displayedIndex = me?.position ?? localIndex;
+  return <main className="shell race" onClick={() => inputRef.current?.focus()}><div className="race-header"><span>{me?.wpm.toFixed(1) ?? '0.0'} WPM</span><span>{me?.accuracy ?? 100}% accuracy</span></div>{countdown && seconds > 0 && <div className="countdown">{seconds}</div>}<div className="track">{text.split('').map((char, index) => <span key={`${index}-${char}`} className={`${incorrectIndexes.has(index) ? 'incorrect ' : ''}${index < displayedIndex ? 'correct' : index === displayedIndex ? 'caret' : ''}`}>{char}</span>)}</div><div className="ghosts">{progress?.players.filter((player) => player.playerId !== playerId).map((player) => <span key={player.playerId} className={`ghost ${player.status === 'disconnected' ? 'offline' : ''}`} style={{ left: `${text.length ? (player.position / text.length) * 100 : 0}%` }}>{player.username}</span>)}</div><input ref={inputRef} className="capture" autoFocus onChange={submit} /></main>;
 }
 
 function Results({ results, onAgain, onLeave }: { results: RaceResultsPayload; onAgain: () => void; onLeave: () => void }) {

@@ -20,6 +20,7 @@ label { display: grid; gap: .4rem; color: #aaa; }
 .race-header { justify-content: space-between; color: #f7c948; }
 .track { margin-top: 5rem; color: #666; font: 1.7rem/2 monospace; word-break: break-word; }
 .track .correct { color: #eee; }
+.track .incorrect { color: #ff5c5c; }
 .track .caret { border-left: 2px solid #f7c948; color: #eee; }
 .capture { position: fixed; opacity: 0; width: 1px; height: 1px; }
 .countdown { position: fixed; inset: 0; display: grid; place-items: center; color: #f7c948; font-size: 8rem; pointer-events: none; }
