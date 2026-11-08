@@ -28,6 +28,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 120s
     ports: ["3000:3000"]
     depends_on:
       postgres: { condition: service_healthy }
