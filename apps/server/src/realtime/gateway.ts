@@ -38,6 +38,18 @@ export function createRealtimeServer(httpServer: HttpServer): Server {
   const bots = new Map<string, BotPlayer>();
   const botTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  const clearBotTimers = (code: string) => {
+    for (const [key, timer] of botTimers) {
+      if (key.startsWith(`${code}:`)) {
+        clearTimeout(timer);
+        botTimers.delete(key);
+      }
+    }
+    for (const key of bots.keys()) {
+      if (key.startsWith(`${code}:`)) bots.delete(key);
+    }
+  };
+
   const sendError = (socket: Socket, message: string, acknowledge?: (value: unknown) => void) => {
     acknowledge?.({ error: message });
     socket.emit(SERVER_EVENTS.ERROR, { error: message });
@@ -58,17 +70,7 @@ export function createRealtimeServer(httpServer: HttpServer): Server {
     io.to(room.code).emit(SERVER_EVENTS.RACE_RESULTS, payload);
     if (room.tickTimer) clearInterval(room.tickTimer);
     if (room.finishTimer) clearTimeout(room.finishTimer);
-    for (const [key, timer] of botTimers) {
-      if (key.startsWith(`${room.code}:`)) {
-        clearTimeout(timer);
-        botTimers.delete(key);
-      }
-    }
-    for (const [key] of bots) {
-      if (key.startsWith(`${room.code}:`)) {
-        bots.delete(key);
-      }
-    }
+    clearBotTimers(room.code);
   };
 
   const tick = (room: Room) => {
@@ -231,7 +233,10 @@ export function createRealtimeServer(httpServer: HttpServer): Server {
       const session = [...sessions.values()].find((item) => item.roomCode && rooms.get(item.roomCode)?.players.get(item.playerId)?.socketId === socket.id);
       if (session?.roomCode) {
         const room = rooms.get(session.roomCode);
-        if (room) rooms.leaveRoom(room.code, session.playerId);
+        if (room) {
+          clearBotTimers(room.code);
+          rooms.leaveRoom(room.code, session.playerId);
+        }
         delete session.roomCode;
       }
     });
