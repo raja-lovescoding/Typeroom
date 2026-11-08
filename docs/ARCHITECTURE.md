@@ -13,3 +13,13 @@
 ## Boundaries
 
 `domain/` is pure logic and imports neither transport nor persistence code.
+
+## Implemented v1 data flows
+
+- **Join:** a client sends a validated username, optional room code, and optional session token. The gateway creates or reattaches the guest session, adds it to an in-memory room, and broadcasts a token-free `room_state`.
+- **Start:** only the host can request `start_race` from `LOBBY`. The room manager picks a text and server start time (`now + 5000ms`); the gateway broadcasts both in `race_countdown`, then transitions to `RACING`.
+- **Keystroke:** the client sends only `{ char, index }`. The gateway validates the shared schema and passes the request with server arrival time to the same room-manager handler used by bots. Wrong indexes, pre-start input, finished players, and burst traffic are rejected.
+- **Tick:** while racing, a 10Hz timer computes each player's position, WPM, accuracy, and status on the server and broadcasts `race_progress`. Results are emitted when all players finish/DNF or at 120 seconds.
+- **Disconnect:** a socket close marks a racing player disconnected without stopping the clock. A 20-second timer marks them DNF unless their session token reconnects and reattaches the stored player state.
+
+Live rooms and timers are intentionally process-local in this first playable version. Persistence, accounts, custom text, and multi-process scaling remain TODOs.

@@ -1,4 +1,29 @@
-:root { color: #f5f5f5; background: #171717; font-family: system-ui, sans-serif; }
-body { margin: 0; }
-main { max-width: 720px; margin: 20vh auto; padding: 2rem; }
-h1 { color: #f7c948; }
+:root { color: #f5f5f5; background: #111; font-family: system-ui, sans-serif; }
+body { margin: 0; min-height: 100vh; }
+button, input, select { font: inherit; border-radius: 6px; border: 1px solid #444; padding: .7rem 1rem; background: #222; color: inherit; }
+button { cursor: pointer; background: #f7c948; border: 0; color: #171717; font-weight: 700; }
+.shell { max-width: 900px; margin: 12vh auto; padding: 2rem; }
+.home { max-width: 480px; display: grid; gap: 1rem; }
+h1 { color: #f7c948; font-size: 3rem; margin: 0; }
+h2 { color: #f7c948; }
+.muted { color: #999; }
+label { display: grid; gap: .4rem; color: #aaa; }
+.actions, .join { display: flex; gap: .5rem; }
+.actions button { flex: 1; }
+.secondary, .link, .small { background: #292929; color: #eee; }
+.link { border: 0; margin-top: 1.5rem; }
+.small { padding: .4rem .7rem; }
+.topline, .race-header { display: flex; align-items: center; gap: 1rem; }
+.topline strong { color: #f7c948; letter-spacing: .2em; }
+.players { padding: 0; list-style: none; line-height: 2; }
+.race { position: relative; margin-top: 18vh; }
+.race-header { justify-content: space-between; color: #f7c948; }
+.track { margin-top: 5rem; color: #666; font: 1.7rem/2 monospace; word-break: break-word; }
+.track .correct { color: #eee; }
+.track .caret { border-left: 2px solid #f7c948; color: #eee; }
+.capture { position: fixed; opacity: 0; width: 1px; height: 1px; }
+.countdown { position: fixed; inset: 0; display: grid; place-items: center; color: #f7c948; font-size: 8rem; pointer-events: none; }
+.ghosts { position: relative; height: 2rem; margin-top: 2rem; }
+.ghost { position: absolute; transform: translateX(-50%); color: #72b7ff; font-size: .75rem; white-space: nowrap; }
+.offline::before { content: 'no wifi '; color: #f66; }
+table { width: 100%; border-collapse: collapse; margin: 2rem 0; } th, td { padding: .8rem; text-align: left; border-bottom: 1px solid #333; }

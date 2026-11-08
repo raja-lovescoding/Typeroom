@@ -9,3 +9,7 @@
 7. **In-memory live state and final-only persistence** — It minimizes latency and avoids storing sensitive keystroke streams.
 8. **Unambiguous six-character codes with rate limiting** — Codes are easy to share while collision and abuse risks are bounded.
 9. **Guest-first identity** — It minimizes onboarding for v1 and leaves account support for v1.1.
+
+## Bot design
+
+The bot is an in-memory `BotPlayer`, not a Socket.IO client. It schedules humanlike delays around its configured WPM, pauses slightly after spaces, and occasionally submits a wrong character. Every submission calls the exact same room-manager keystroke handler as a human, so the normal index, timing, scoring, and burst-limit rules apply equally. Bot timers are scoped to the room and are cleared when the race ends.
