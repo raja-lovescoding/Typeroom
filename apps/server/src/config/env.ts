@@ -4,7 +4,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
   CLIENT_ORIGIN: z.string().url().default('http://localhost:5173'),
-  DATABASE_URL: z.string().default('postgres://typeroom:typeroom@localhost:5432/typeroom'),
+  DATABASE_URL: z.string().default('postgres://typeroom:typeroom@localhost:5433/typeroom'),
   DISCONNECT_GRACE_MS: z.coerce.number().int().positive().default(15_000),
 });
 

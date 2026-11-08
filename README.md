@@ -4,14 +4,17 @@ Production-grade multiplayer typing-race scaffold. Product features are intentio
 
 ## Run locally
 
-1. Copy `.env.example` to `.env`.
-2. Install Node.js 22 and pnpm 9.
-3. Run `pnpm install`.
-4. Run `pnpm db:migrate` with PostgreSQL available.
-5. Run `pnpm dev`.
-6. Open [http://localhost:5173](http://localhost:5173).
+Docker is only used for the database; the app itself runs natively.
 
-Or run the complete development stack with `docker compose up --build`, then open the same URL.
+1. Install Node.js 22 and pnpm 9.
+2. Create `apps/web/.env` containing `VITE_SOCKET_URL=http://localhost:3000`.
+3. Run `pnpm install`.
+4. Run `docker compose up -d` to start PostgreSQL (published on `localhost:5433`).
+5. Run `pnpm db:migrate`.
+6. Run `pnpm dev` (or `pnpm dev` inside `apps/server` and `apps/web` in two terminals).
+7. Open [http://localhost:5173](http://localhost:5173).
+
+To run the whole stack in Docker instead, use `docker compose --profile full up --build`. Run `pnpm install` again afterwards before going back to native `pnpm dev`, since the containers overwrite `node_modules`.
 
 Useful checks: `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `docker compose -f docker-compose.prod.yml build`.
 
