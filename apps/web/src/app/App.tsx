@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   CLIENT_EVENTS,
   raceCountdownSchema,
@@ -35,6 +35,8 @@ export function App() {
     const onCountdown = (raw: unknown) => {
       const parsed = raceCountdownSchema.safeParse(raw);
       if (!parsed.success) return;
+      // A new race starts: drop the previous race's progress so its old text isn't shown.
+      setProgress(undefined);
       setCountdown(parsed.data);
       setScreen('race');
     };
@@ -94,7 +96,7 @@ export function App() {
     join(code);
   }} />;
   if (screen === 'lobby' && room) return <Lobby room={room} playerId={playerId} onStart={() => socket.emit(CLIENT_EVENTS.START_RACE, {})} onLeave={() => { socket.emit(CLIENT_EVENTS.LEAVE_ROOM); setScreen('home'); }} />;
-  if (screen === 'race' && (progress || countdown)) return <Race playerId={playerId} countdown={countdown} progress={progress} />;
+  if (screen === 'race' && (progress || countdown)) return <Race key={countdown?.text ?? progress?.text} playerId={playerId} countdown={countdown} progress={progress} />;
   if (screen === 'results' && results) return <Results results={results} onAgain={() => { setResults(undefined); socket.emit(CLIENT_EVENTS.RACE_AGAIN, {}); }} onLeave={() => { socket.emit(CLIENT_EVENTS.LEAVE_ROOM); setScreen('home'); }} />;
   return <Home onCreate={() => undefined} onJoin={() => undefined} />;
 }
@@ -119,35 +121,99 @@ function Lobby({ room, playerId, onStart, onLeave }: { room: RoomStateMessage; p
 
 function Race({ playerId, countdown, progress }: { playerId: string; countdown: { startsInMs: number; text: string } | undefined; progress: RaceProgressPayload | undefined }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const charRefs = useRef<(HTMLSpanElement | null)[]>([]);
+  const lastTypedAt = useRef(0);
   const [localIndex, setLocalIndex] = useState(0);
-  const [incorrectIndexes, setIncorrectIndexes] = useState<Set<number>>(new Set());
+  // Number of wrong presses at the current index; each press re-triggers the red blink.
+  const [errorPulse, setErrorPulse] = useState(0);
   const [seconds, setSeconds] = useState(Math.ceil((countdown?.startsInMs ?? 0) / 1000));
+  const [layoutTick, setLayoutTick] = useState(0);
+  const [caretSpots, setCaretSpots] = useState<Record<string, CaretSpot>>({});
   const text = progress?.text ?? countdown?.text ?? '';
   const me = progress?.players.find((player) => player.playerId === playerId);
+  const others = progress?.players.filter((player) => player.playerId !== playerId) ?? [];
+  // Progress only arrives once the race is live, so typing is blocked during the countdown.
+  const live = Boolean(progress) && localIndex < text.length;
+
   useEffect(() => { inputRef.current?.focus(); }, []);
   useEffect(() => { if (!countdown) return; setSeconds(Math.ceil(countdown.startsInMs / 1000)); const timer = window.setInterval(() => setSeconds((value) => Math.max(0, value - 1)), 1000); return () => window.clearInterval(timer); }, [countdown]);
-  useEffect(() => { if (me) setLocalIndex(me.position); }, [me?.position]);
+  // Own position is tracked locally so the caret never lags behind the keyboard.
+  // Only adopt the server position when it is ahead (e.g. after reconnect) or the player has paused.
+  useEffect(() => {
+    if (!me) return;
+    setLocalIndex((current) => (me.position > current || Date.now() - lastTypedAt.current > 750 ? me.position : current));
+  }, [me?.position]);
+  useEffect(() => {
+    const onResize = () => setLayoutTick((value) => value + 1);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const otherKey = others.map((player) => `${player.playerId}:${player.position}`).join('|');
+  useLayoutEffect(() => {
+    const spotAt = (index: number): CaretSpot | undefined => {
+      const span = charRefs.current[Math.min(index, text.length - 1)];
+      if (!span) return undefined;
+      const atEnd = index >= text.length;
+      return { x: span.offsetLeft + (atEnd ? span.offsetWidth : 0), y: span.offsetTop, h: span.offsetHeight };
+    };
+    const next: Record<string, CaretSpot> = {};
+    const mine = spotAt(localIndex);
+    if (mine) next[playerId || 'me'] = mine;
+    for (const player of others) {
+      const spot = spotAt(player.position);
+      if (spot) next[player.playerId] = spot;
+    }
+    setCaretSpots(next);
+  }, [text, localIndex, otherKey, layoutTick, playerId]);
+
   const submit = (event: React.ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
-    if (!value) return;
+    event.target.value = '';
+    if (!value || !live) return;
     const char = value[value.length - 1] ?? '';
     const index = localIndex;
+    lastTypedAt.current = Date.now();
     socket.emit(CLIENT_EVENTS.KEYSTROKE, { char, index });
     if (char === text[index]) {
-      setIncorrectIndexes((indexes) => {
-        const next = new Set(indexes);
-        next.delete(index);
-        return next;
-      });
-      setLocalIndex((current) => current + 1);
+      setErrorPulse(0);
+      setLocalIndex(index + 1);
     } else {
-      setIncorrectIndexes((indexes) => new Set(indexes).add(index));
+      setErrorPulse((count) => count + 1);
     }
-    event.target.value = '';
   };
-  const displayedIndex = me?.position ?? localIndex;
-  return <main className="shell race" onClick={() => inputRef.current?.focus()}><div className="race-header"><span>{me?.wpm.toFixed(1) ?? '0.0'} WPM</span><span>{me?.accuracy ?? 100}% accuracy</span></div>{countdown && seconds > 0 && <div className="countdown">{seconds}</div>}<div className="track">{text.split('').map((char, index) => <span key={`${index}-${char}`} className={`${incorrectIndexes.has(index) ? 'incorrect ' : ''}${index < displayedIndex ? 'correct' : index === displayedIndex ? 'caret' : ''}`}>{char}</span>)}</div><div className="ghosts">{progress?.players.filter((player) => player.playerId !== playerId).map((player) => <span key={player.playerId} className={`ghost ${player.status === 'disconnected' ? 'offline' : ''}`} style={{ left: `${text.length ? (player.position / text.length) * 100 : 0}%` }}>{player.username}</span>)}</div><input ref={inputRef} className="capture" autoFocus onChange={submit} /></main>;
+
+  const myColor = '#f7c948';
+  const mySpot = caretSpots[playerId || 'me'];
+  return <main className="shell race" onClick={() => inputRef.current?.focus()}>
+    <div className="race-header"><span>{me?.wpm.toFixed(1) ?? '0.0'} WPM</span><span>{me?.accuracy ?? 100}% accuracy</span></div>
+    {countdown && seconds > 0 && <div className="countdown">{seconds}</div>}
+    <div className="track" ref={trackRef}>
+      {text.split('').map((char, index) => {
+        const isWrong = index === localIndex && errorPulse > 0;
+        return <span
+          key={isWrong ? `${index}-err-${errorPulse}` : `${index}`}
+          ref={(node) => { charRefs.current[index] = node; }}
+          className={index < localIndex ? 'correct' : isWrong ? 'incorrect' : index === localIndex ? 'current' : ''}
+        >{char}</span>;
+      })}
+      {others.map((player, order) => {
+        const spot = caretSpots[player.playerId];
+        if (!spot) return null;
+        const color = OPPONENT_COLORS[order % OPPONENT_COLORS.length];
+        return <div key={player.playerId} className={`caret opponent ${player.status === 'disconnected' ? 'offline' : ''}`} style={{ transform: `translate(${spot.x}px, ${spot.y}px)`, height: spot.h, '--caret-color': color } as React.CSSProperties}>
+          <span className="caret-name">{player.username}</span>
+        </div>;
+      })}
+      {mySpot && <div className="caret mine" style={{ transform: `translate(${mySpot.x}px, ${mySpot.y}px)`, height: mySpot.h, '--caret-color': myColor } as React.CSSProperties} />}
+    </div>
+    <input ref={inputRef} className="capture" autoFocus onChange={submit} />
+  </main>;
 }
+
+interface CaretSpot { x: number; y: number; h: number }
+const OPPONENT_COLORS = ['#72b7ff', '#ff7ab6', '#7ee787', '#c39bff'];
 
 function Results({ results, onAgain, onLeave }: { results: RaceResultsPayload; onAgain: () => void; onLeave: () => void }) {
   return <main className="shell"><h2>Results</h2><table><thead><tr><th>#</th><th>Name</th><th>WPM</th><th>Accuracy</th></tr></thead><tbody>{results.results.map((result) => <tr key={result.playerId}><td>{result.rank}</td><td>{result.username}</td><td>{result.wpm.toFixed(1)}</td><td>{result.accuracy}%</td></tr>)}</tbody></table><button onClick={onAgain}>Race again</button><button className="link" onClick={onLeave}>Leave</button></main>;
