@@ -1,0 +1,140 @@
+/*
+ * Theme tokens. Every colour in the UI comes from these variables.
+ * Selectors are [data-theme] (not :root-only) so any element can preview a theme:
+ * the picker's swatches set data-theme on themselves and inherit the real tokens.
+ *
+ *   --bg / --bg-raised / --bg-hover / --border   surfaces
+ *   --text        typed text and primary UI text
+ *   --sub         untyped text (deliberately dim)
+ *   --sub-strong  secondary UI text, labels, icons
+ *   --accent      own caret, highlights, primary buttons; --accent-ink is text on it
+ *   --error       incorrect characters; --extra is the darker extra-character tone
+ *   --ghost-1..4  opponents' carets, in fixed join order
+ */
+
+:root,
+[data-theme='ember'] {
+  color-scheme: dark;
+  --bg: #121214; --bg-raised: #1b1b1f; --bg-hover: #26262b; --border: #2c2c31;
+  --text: #ecebe6; --sub: #5c5c63; --sub-strong: #9a9aa2;
+  --accent: #f7c948; --accent-ink: #1a1500;
+  --error: #ff6b6b; --extra: #b84a4a;
+  --ghost-1: #6cb6ff; --ghost-2: #ff7eb6; --ghost-3: #7ee08a; --ghost-4: #c4a1ff;
+}
+
+[data-theme='paper'] {
+  color-scheme: light;
+  --bg: #f5f2ea; --bg-raised: #ebe7dc; --bg-hover: #e1dccf; --border: #d8d2c3;
+  --text: #2a2824; --sub: #a8a193; --sub-strong: #6e685c;
+  --accent: #c2410c; --accent-ink: #fff7ef;
+  --error: #d42a2a; --extra: #8f1d1d;
+  --ghost-1: #1d6fd1; --ghost-2: #b0307a; --ghost-3: #2c8a3e; --ghost-4: #7a4fd0;
+}
+
+[data-theme='midnight'] {
+  color-scheme: dark;
+  --bg: #0e1320; --bg-raised: #161d2e; --bg-hover: #1f283d; --border: #253049;
+  --text: #dfe6f5; --sub: #4c5878; --sub-strong: #8a96b5;
+  --accent: #7aa2ff; --accent-ink: #0b1020;
+  --error: #ff6e7f; --extra: #b5475a;
+  --ghost-1: #ffc66d; --ghost-2: #ff8ad8; --ghost-3: #6ee7c8; --ghost-4: #c9a7ff;
+}
+
+[data-theme='dune'] {
+  color-scheme: dark;
+  --bg: #2a201a; --bg-raised: #33281f; --bg-hover: #3e3127; --border: #4a3b2e;
+  --text: #f3e4cf; --sub: #7f6a57; --sub-strong: #b49c84;
+  --accent: #eaa35a; --accent-ink: #2a1a0c;
+  --error: #ff6f5e; --extra: #b4483a;
+  --ghost-1: #8cc6ff; --ghost-2: #f59ac7; --ghost-3: #a6dd7a; --ghost-4: #c7b0ff;
+}
+
+[data-theme='glacier'] {
+  color-scheme: light;
+  --bg: #e9f1f5; --bg-raised: #dce8ee; --bg-hover: #cfdfe7; --border: #c3d5de;
+  --text: #1d3340; --sub: #8ea8b6; --sub-strong: #557282;
+  --accent: #1a86b0; --accent-ink: #f2fbff;
+  --error: #d0384b; --extra: #8e1f2e;
+  --ghost-1: #c46a12; --ghost-2: #b03b8f; --ghost-3: #2f8a4f; --ghost-4: #6a4fd0;
+}
+
+[data-theme='contrast'] {
+  color-scheme: dark;
+  --bg: #000000; --bg-raised: #0f0f0f; --bg-hover: #1f1f1f; --border: #5a5a5a;
+  --text: #ffffff; --sub: #a0a0a0; --sub-strong: #d0d0d0;
+  --accent: #ffe600; --accent-ink: #000000;
+  --error: #ff5050; --extra: #ff9d9d;
+  --ghost-1: #4dc3ff; --ghost-2: #ff66d9; --ghost-3: #66ff99; --ghost-4: #b8a1ff;
+}
+
+[data-theme='fog'] {
+  color-scheme: dark;
+  --bg: #2c2e33; --bg-raised: #33363c; --bg-hover: #3b3e45; --border: #42454c;
+  --text: #a9aeb7; --sub: #5d6169; --sub-strong: #7f848d;
+  --accent: #9aa4b5; --accent-ink: #22242a;
+  --error: #c98585; --extra: #8f5f5f;
+  --ghost-1: #8fb0c9; --ghost-2: #c49ab8; --ghost-3: #9fbf98; --ghost-4: #b3a6cc;
+}
+
+[data-theme='moss'] {
+  color-scheme: dark;
+  --bg: #1a221c; --bg-raised: #212b23; --bg-hover: #2a362c; --border: #314034;
+  --text: #e0eadb; --sub: #5a6d5d; --sub-strong: #93a796;
+  --accent: #a3d16b; --accent-ink: #142010;
+  --error: #ff7a6b; --extra: #b84f44;
+  --ghost-1: #6fc3ff; --ghost-2: #f598c8; --ghost-3: #ffd36b; --ghost-4: #c3a6ff;
+}
+
+[data-theme='rosewater'] {
+  color-scheme: light;
+  --bg: #fbf0f2; --bg-raised: #f3e2e6; --bg-hover: #ebd3d9; --border: #e4c8cf;
+  --text: #4b2d37; --sub: #c49aa6; --sub-strong: #8a5e6b;
+  --accent: #c2477a; --accent-ink: #fff5f8;
+  --error: #d93a1f; --extra: #8d2410;
+  --ghost-1: #2479c7; --ghost-2: #2f8f5b; --ghost-3: #b8730f; --ghost-4: #6b4fcf;
+}
+
+[data-theme='harbor'] {
+  color-scheme: dark;
+  --bg: #0f2226; --bg-raised: #152d32; --bg-hover: #1c393f; --border: #24454c;
+  --text: #d5eeea; --sub: #4a6c6f; --sub-strong: #86aaa9;
+  --accent: #4fd6c4; --accent-ink: #062220;
+  --error: #ff7b7b; --extra: #b84f55;
+  --ghost-1: #ffc56b; --ghost-2: #ff8fc8; --ghost-3: #a8b8ff; --ghost-4: #b7e67a;
+}
+
+[data-theme='phosphor'] {
+  color-scheme: dark;
+  --bg: #060906; --bg-raised: #0c120c; --bg-hover: #132013; --border: #1d331d;
+  --text: #b9ffbf; --sub: #2e5f33; --sub-strong: #5fa765;
+  --accent: #3dff73; --accent-ink: #021204;
+  --error: #ff5f56; --extra: #b13d37;
+  --ghost-1: #ffd84d; --ghost-2: #5ccfff; --ghost-3: #ff7ad1; --ghost-4: #e8e8e8;
+}
+
+[data-theme='plum'] {
+  color-scheme: dark;
+  --bg: #211a2a; --bg-raised: #2a2135; --bg-hover: #342940; --border: #3d304b;
+  --text: #ece0f5; --sub: #6b5a7d; --sub-strong: #a693b8;
+  --accent: #cf8df2; --accent-ink: #1d0f29;
+  --error: #ff7088; --extra: #b3485b;
+  --ghost-1: #7cc8ff; --ghost-2: #ffc46b; --ghost-3: #7fe0a6; --ghost-4: #ff9fc0;
+}
+
+[data-theme='sunset'] {
+  color-scheme: dark;
+  --bg: #2c1620; --bg-raised: #361c28; --bg-hover: #422332; --border: #4d2a3a;
+  --text: #ffe7d9; --sub: #845462; --sub-strong: #c38f98;
+  --accent: #ff8d5c; --accent-ink: #2a0f06;
+  --error: #ff5577; --extra: #b33a52;
+  --ghost-1: #7cc4ff; --ghost-2: #ffd76b; --ghost-3: #8fe39b; --ghost-4: #c8a8ff;
+}
+
+[data-theme='chalk'] {
+  color-scheme: light;
+  --bg: #ececec; --bg-raised: #e1e1e1; --bg-hover: #d5d5d5; --border: #cdcdcd;
+  --text: #1f1f1f; --sub: #9c9c9c; --sub-strong: #5f5f5f;
+  --accent: #2f6fde; --accent-ink: #ffffff;
+  --error: #d33b3b; --extra: #8c2020;
+  --ghost-1: #c06a10; --ghost-2: #b0307a; --ghost-3: #2a8a45; --ghost-4: #7a4fd0;
+}

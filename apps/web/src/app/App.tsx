@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CLIENT_EVENTS,
+  errorSchema,
   raceCountdownSchema,
   raceProgressSchema,
   raceResultsSchema,
@@ -10,34 +11,94 @@ import {
   type RaceResultsPayload,
   type RoomStateMessage,
 } from '@typeroom/shared';
+import { CommandPalette, type Command } from '../components/CommandPalette.js';
+import { Footer, Header, Toast } from '../components/Chrome.js';
+import { SettingsPanel } from '../components/SettingsPanel.js';
+import { Home, Lobby, type BotSpeed } from '../features/lobby/Lobby.js';
+import { FOCUS_TYPING_EVENT, Race } from '../features/race/Race.js';
+import { createTypingLog, type TypingLog } from '../features/race/typingStats.js';
+import { Results } from '../features/results/Results.js';
 import { session } from '../lib/session.js';
 import { socket } from '../lib/socket.js';
+import {
+  CARET_STYLES, FONT_SIZE, TYPING_FONTS, getSettings, previewTheme, updateSettings, useSettings, type Settings,
+} from '../settings/settings.js';
+import { THEMES } from '../settings/themes.js';
+import '../styles/fonts.js';
+import '../styles/themes.css';
 import '../styles/global.css';
 
 type Screen = 'home' | 'lobby' | 'race' | 'results';
+type JoinResponse = { playerId?: string; token?: string; room?: RoomStateMessage; error?: string };
+
+const QUICK_ACTION_WINDOW_MS = 1_500;
 
 export function App() {
+  const settings = useSettings();
   const [screen, setScreen] = useState<Screen>('home');
   const [room, setRoom] = useState<RoomStateMessage>();
   const [progress, setProgress] = useState<RaceProgressPayload>();
   const [results, setResults] = useState<RaceResultsPayload>();
   const [countdown, setCountdown] = useState<{ startsInMs: number; text: string }>();
   const [playerId, setPlayerId] = useState('');
+  const [raceSeq, setRaceSeq] = useState(0);
+  const [raceDurationMs, setRaceDurationMs] = useState(0);
+  const [palette, setPalette] = useState<{ menu?: string } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const [toast, setToast] = useState<string>();
+  const logRef = useRef<TypingLog>(createTypingLog());
+  const autoStartRef = useRef(false);
+  const tabArmedAt = useRef(0);
   const routeCode = useMemo(() => window.location.pathname.match(/^\/r\/([A-Z2-9]{6})$/)?.[1], []);
+
+  const isHost = Boolean(room && playerId && room.players[0]?.playerId === playerId);
+  const onlyBots = Boolean(room && room.players.every((player) => player.playerId === playerId || player.isBot));
+
+  const notify = useCallback((message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast((current) => (current === message ? undefined : current)), 2_400);
+  }, []);
+
+  const enterRoom = useCallback((response: JoinResponse) => {
+    if (response.error) return notify(response.error);
+    if (response.playerId) setPlayerId(response.playerId);
+    if (response.token) session.setToken(response.token);
+    if (response.room) {
+      setRoom(response.room);
+      window.history.replaceState(null, '', `/r/${response.room.code}`);
+      if (response.room.state === 'LOBBY') setScreen('lobby');
+    }
+  }, [notify]);
+
+  const join = useCallback((code?: string) => {
+    const username = session.getUsername() || 'Guest';
+    socket.emit(CLIENT_EVENTS.JOIN_ROOM, { code, username, token: session.getToken() ?? undefined }, enterRoom);
+  }, [enterRoom]);
 
   useEffect(() => {
     const onRoom = (raw: unknown) => {
       const parsed = roomStateSchema.safeParse(raw);
       if (!parsed.success) return;
       setRoom(parsed.data);
-      if (parsed.data.state === 'LOBBY') setScreen('lobby');
+      if (parsed.data.state === 'LOBBY') {
+        setScreen('lobby');
+        // Quick restart against bots: race-again goes straight into the next countdown.
+        if (autoStartRef.current) {
+          autoStartRef.current = false;
+          socket.emit(CLIENT_EVENTS.START_RACE, {});
+        }
+      }
     };
     const onCountdown = (raw: unknown) => {
       const parsed = raceCountdownSchema.safeParse(raw);
       if (!parsed.success) return;
       // A new race starts: drop the previous race's progress so its old text isn't shown.
+      logRef.current = createTypingLog(Date.now() + parsed.data.startsInMs);
       setProgress(undefined);
+      setResults(undefined);
       setCountdown(parsed.data);
+      setRaceSeq((value) => value + 1);
       setScreen('race');
     };
     const onProgress = (raw: unknown) => {
@@ -49,8 +110,15 @@ export function App() {
     const onResults = (raw: unknown) => {
       const parsed = raceResultsSchema.safeParse(raw);
       if (!parsed.success) return;
+      const startedAt = logRef.current.startedAt;
+      setRaceDurationMs(startedAt === null ? 0 : Date.now() - startedAt);
       setResults(parsed.data);
+      setTyping(false);
       setScreen('results');
+    };
+    const onError = (raw: unknown) => {
+      const parsed = errorSchema.safeParse(raw);
+      if (parsed.success) notify(parsed.data.error);
     };
     const onConnect = () => { if (routeCode) join(routeCode); };
     socket.on('connect', onConnect);
@@ -58,163 +126,182 @@ export function App() {
     socket.on(SERVER_EVENTS.RACE_COUNTDOWN, onCountdown);
     socket.on(SERVER_EVENTS.RACE_PROGRESS, onProgress);
     socket.on(SERVER_EVENTS.RACE_RESULTS, onResults);
+    socket.on(SERVER_EVENTS.ERROR, onError);
     if (routeCode && socket.connected) join(routeCode);
     return () => {
-      socket.off(SERVER_EVENTS.ROOM_STATE, onRoom);
       socket.off('connect', onConnect);
+      socket.off(SERVER_EVENTS.ROOM_STATE, onRoom);
       socket.off(SERVER_EVENTS.RACE_COUNTDOWN, onCountdown);
       socket.off(SERVER_EVENTS.RACE_PROGRESS, onProgress);
       socket.off(SERVER_EVENTS.RACE_RESULTS, onResults);
+      socket.off(SERVER_EVENTS.ERROR, onError);
     };
-  }, [routeCode]);
+  }, [routeCode, join, notify]);
 
-  const join = (code?: string) => {
+  // ---- actions --------------------------------------------------------------------------------
+
+  const create = (bot?: BotSpeed) => {
     const username = session.getUsername() || 'Guest';
-    socket.emit(CLIENT_EVENTS.JOIN_ROOM, { code, username, token: session.getToken() ?? undefined }, (response: { playerId?: string; token?: string; room?: RoomStateMessage }) => {
-      if (response.playerId) setPlayerId(response.playerId);
-      if (response.token) session.setToken(response.token);
-      if (response.room) {
-        setRoom(response.room);
-        setScreen('lobby');
-      }
+    socket.emit(CLIENT_EVENTS.CREATE_ROOM, { username, token: session.getToken() ?? undefined, ...(bot ? { bot: { targetWpm: bot } } : {}) }, (response: JoinResponse) => {
+      enterRoom(response);
+      if (response.room && bot) socket.emit(CLIENT_EVENTS.START_RACE, {});
     });
   };
+  const startRace = () => socket.emit(CLIENT_EVENTS.START_RACE, {});
+  const raceAgain = () => {
+    autoStartRef.current = isHost && onlyBots;
+    setResults(undefined);
+    socket.emit(CLIENT_EVENTS.RACE_AGAIN, {});
+  };
+  const leave = () => {
+    socket.emit(CLIENT_EVENTS.LEAVE_ROOM);
+    setRoom(undefined);
+    setProgress(undefined);
+    setResults(undefined);
+    setCountdown(undefined);
+    setScreen('home');
+    window.history.replaceState(null, '', '/');
+  };
+  const copyLink = () => {
+    if (!room) return;
+    const link = `${window.location.origin}/r/${room.code}`;
+    navigator.clipboard.writeText(link).then(() => notify('Invite link copied'), () => notify(link));
+  };
 
-  if (screen === 'home') return <Home onCreate={(bot) => {
-    const username = session.getUsername() || 'Guest';
-    socket.emit(CLIENT_EVENTS.CREATE_ROOM, { username, token: session.getToken() ?? undefined, ...(bot ? { bot: { targetWpm: bot } } : {}) }, (response: { playerId?: string; token?: string; room?: RoomStateMessage }) => {
-      if (response.playerId) setPlayerId(response.playerId);
-      if (response.token) session.setToken(response.token);
-      if (response.room) {
-        setRoom(response.room);
-        setScreen('lobby');
-        if (bot) socket.emit(CLIENT_EVENTS.START_RACE, {});
+  const quickAction = screen === 'results' ? { label: 'race again', run: raceAgain }
+    : screen === 'lobby' && isHost ? { label: 'start race', run: startRace }
+    : undefined;
+
+  const closeOverlays = () => {
+    setPalette(null);
+    setSettingsOpen(false);
+    previewTheme(null);
+    window.setTimeout(() => window.dispatchEvent(new Event(FOCUS_TYPING_EVENT)), 0);
+  };
+
+  // ---- keyboard-first flow --------------------------------------------------------------------
+
+  const overlayOpen = palette !== null || settingsOpen;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (overlayOpen) closeOverlays();
+        else setPalette({});
+        return;
       }
+      if (overlayOpen) return;
+      if (event.key === 'Tab') {
+        // In a race Tab must never move focus off the text; elsewhere it arms the quick action.
+        if (screen === 'race' || quickAction) event.preventDefault();
+        if (quickAction) tabArmedAt.current = Date.now();
+        return;
+      }
+      if (event.key === 'Enter' && quickAction && Date.now() - tabArmedAt.current < QUICK_ACTION_WINDOW_MS) {
+        event.preventDefault();
+        tabArmedAt.current = 0;
+        quickAction.run();
+        return;
+      }
+      if (event.key !== 'Shift') tabArmedAt.current = 0;
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  });
+
+  // Focus mode: fade the chrome while typing, bring it back on mouse movement.
+  useEffect(() => {
+    if (!typing) return;
+    const wake = () => setTyping(false);
+    window.addEventListener('mousemove', wake);
+    return () => window.removeEventListener('mousemove', wake);
+  }, [typing]);
+  const focusing = settings.focusMode && screen === 'race' && typing && !overlayOpen;
+
+  // ---- command palette ------------------------------------------------------------------------
+
+  const commands = useMemo<Command[]>(() => {
+    const list: Command[] = [];
+    if (screen === 'lobby' && isHost) list.push({ id: 'start', label: 'Start race', hint: 'tab + enter', run: startRace });
+    if (screen === 'results') list.push({ id: 'again', label: 'Race again', hint: 'tab + enter', run: raceAgain });
+    if (room) {
+      list.push({ id: 'copy-link', label: 'Copy room link', keywords: 'invite share url', run: copyLink });
+      list.push({ id: 'leave', label: 'Leave room', keywords: 'exit quit home', run: leave });
+    }
+    const current = getSettings();
+    const toggle = (key: keyof Settings & ('smoothCaret' | 'ghostLabels' | 'highlightErrors' | 'focusMode'), label: string): Command => ({
+      id: `toggle-${key}`, label, group: 'toggle', hint: current[key] ? 'on' : 'off', run: () => updateSettings({ [key]: !current[key] }),
     });
-  }} onJoin={(code, username) => {
-    session.setUsername(username);
-    join(code);
-  }} />;
-  if (screen === 'lobby' && room) return <Lobby room={room} playerId={playerId} onStart={() => socket.emit(CLIENT_EVENTS.START_RACE, {})} onLeave={() => { socket.emit(CLIENT_EVENTS.LEAVE_ROOM); setScreen('home'); }} />;
-  if (screen === 'race' && (progress || countdown)) return <Race key={countdown?.text ?? progress?.text} playerId={playerId} countdown={countdown} progress={progress} />;
-  if (screen === 'results' && results) return <Results results={results} onAgain={() => { setResults(undefined); socket.emit(CLIENT_EVENTS.RACE_AGAIN, {}); }} onLeave={() => { socket.emit(CLIENT_EVENTS.LEAVE_ROOM); setScreen('home'); }} />;
-  return <Home onCreate={() => undefined} onJoin={() => undefined} />;
-}
+    list.push(
+      {
+        id: 'theme', label: 'Change theme…', keywords: 'colour color appearance dark light',
+        hint: THEMES.find((theme) => theme.id === current.theme)?.label,
+        children: () => THEMES.map((theme) => ({
+          id: `theme-${theme.id}`, label: theme.label, keywords: theme.tags.join(' '), hint: theme.tags.join(' · '),
+          active: theme.id === getSettings().theme,
+          onHighlight: () => previewTheme(theme.id),
+          run: () => updateSettings({ theme: theme.id }),
+        })),
+      },
+      {
+        id: 'font', label: 'Change typing font…', keywords: 'typeface monospace',
+        hint: TYPING_FONTS.find((font) => font.id === current.typingFont)?.label,
+        children: () => TYPING_FONTS.map((font) => ({
+          id: `font-${font.id}`, label: font.label, active: font.id === getSettings().typingFont, run: () => updateSettings({ typingFont: font.id }),
+        })),
+      },
+      {
+        id: 'font-size', label: 'Change font size…', keywords: 'bigger smaller zoom', hint: `${current.fontSize}rem`,
+        children: () => {
+          const sizes: number[] = [];
+          for (let size = FONT_SIZE.min; size <= FONT_SIZE.max; size += FONT_SIZE.step) sizes.push(size);
+          return sizes.map((size) => ({ id: `size-${size}`, label: `${size.toFixed(2)}rem`, active: size === getSettings().fontSize, run: () => updateSettings({ fontSize: size }) }));
+        },
+      },
+      {
+        id: 'caret', label: 'Change caret style…', keywords: 'cursor', hint: current.caretStyle,
+        children: () => CARET_STYLES.map((style) => ({ id: `caret-${style}`, label: style, active: style === getSettings().caretStyle, run: () => updateSettings({ caretStyle: style }) })),
+      },
+      toggle('smoothCaret', 'Smooth caret'),
+      toggle('ghostLabels', 'Racer name labels'),
+      toggle('highlightErrors', 'Highlight errors'),
+      toggle('focusMode', 'Focus mode'),
+      { id: 'settings', label: 'Open settings', keywords: 'preferences options', run: () => setSettingsOpen(true) },
+    );
+    return list;
+    // `settings` is a dependency so hints reflect the latest values.
+  }, [screen, isHost, room, settings, onlyBots]);
 
-function Home({ onCreate, onJoin }: { onCreate: (bot?: 40 | 60 | 90 | 120) => void; onJoin: (code: string, username: string) => void }) {
-  const [username, setUsername] = useState(session.getUsername());
-  const [code, setCode] = useState('');
-  const [speed, setSpeed] = useState<40 | 60 | 90 | 120>(60);
-  const save = () => { const name = username.trim() || 'Guest'; session.setUsername(name); return name; };
-  return <main className="shell home"><h1>Typeroom</h1><p className="muted">A focused typing race for friends and rivals.</p>
-    <label>Username<input value={username} maxLength={24} onChange={(event) => setUsername(event.target.value)} /></label>
-    <div className="actions"><button onClick={() => { save(); onCreate(speed); }}>Race a bot</button><select value={speed} onChange={(event) => setSpeed(Number(event.target.value) as typeof speed)}><option value={40}>40 WPM</option><option value={60}>60 WPM</option><option value={90}>90 WPM</option><option value={120}>120 WPM</option></select></div>
-    <button className="secondary" onClick={() => { save(); onCreate(); }}>Create room</button>
-    <div className="join"><input placeholder="ROOM CODE" value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} /><button className="secondary" onClick={() => onJoin(code, save())}>Join by code</button></div>
-  </main>;
-}
+  // ---- render ---------------------------------------------------------------------------------
 
-function Lobby({ room, playerId, onStart, onLeave }: { room: RoomStateMessage; playerId: string; onStart: () => void; onLeave: () => void }) {
-  const link = `${window.location.origin}/r/${room.code}`;
-  return <main className="shell"><div className="topline"><span>ROOM</span><strong>{room.code}</strong><button className="small" onClick={() => void navigator.clipboard.writeText(link)}>Copy link</button></div><h2>Waiting for racers</h2><ul className="players">{room.players.map((player) => <li key={player.playerId}>{player.username}{player.playerId === room.players[0]?.playerId ? ' (host)' : ''}{player.playerId === playerId ? ' (you)' : ''}{player.isBot ? ' 🤖' : ''}</li>)}</ul>{room.players[0]?.playerId === playerId && <button onClick={onStart}>Start race</button>}<button className="link" onClick={onLeave}>Leave</button></main>;
-}
-
-function Race({ playerId, countdown, progress }: { playerId: string; countdown: { startsInMs: number; text: string } | undefined; progress: RaceProgressPayload | undefined }) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const trackRef = useRef<HTMLDivElement>(null);
-  const charRefs = useRef<(HTMLSpanElement | null)[]>([]);
-  const lastTypedAt = useRef(0);
-  const [localIndex, setLocalIndex] = useState(0);
-  // Number of wrong presses at the current index; each press re-triggers the red blink.
-  const [errorPulse, setErrorPulse] = useState(0);
-  const [seconds, setSeconds] = useState(Math.ceil((countdown?.startsInMs ?? 0) / 1000));
-  const [layoutTick, setLayoutTick] = useState(0);
-  const [caretSpots, setCaretSpots] = useState<Record<string, CaretSpot>>({});
-  const text = progress?.text ?? countdown?.text ?? '';
   const me = progress?.players.find((player) => player.playerId === playerId);
-  const others = progress?.players.filter((player) => player.playerId !== playerId) ?? [];
-  // Progress only arrives once the race is live, so typing is blocked during the countdown.
-  const live = Boolean(progress) && localIndex < text.length;
+  let content;
+  if (screen === 'lobby' && room) {
+    content = <Lobby room={room} playerId={playerId} isHost={isHost} onStart={startRace} onCopyLink={copyLink} />;
+  } else if (screen === 'race' && (progress || countdown)) {
+    content = <Race key={raceSeq} playerId={playerId} countdown={countdown} progress={progress} log={logRef.current} onTyping={() => setTyping(true)} />;
+  } else if (screen === 'results' && results) {
+    content = <Results
+      results={results}
+      playerId={playerId}
+      log={logRef.current}
+      textLength={progress?.text.length ?? countdown?.text.length ?? 0}
+      finalPosition={me?.position ?? 0}
+      raceDurationMs={raceDurationMs}
+      roster={room?.players ?? results.results}
+      onAgain={raceAgain}
+      onLeave={leave}
+    />;
+  } else {
+    content = <Home onCreate={create} onJoin={join} initialCode={routeCode} />;
+  }
 
-  useEffect(() => { inputRef.current?.focus(); }, []);
-  useEffect(() => { if (!countdown) return; setSeconds(Math.ceil(countdown.startsInMs / 1000)); const timer = window.setInterval(() => setSeconds((value) => Math.max(0, value - 1)), 1000); return () => window.clearInterval(timer); }, [countdown]);
-  // Own position is tracked locally so the caret never lags behind the keyboard.
-  // Only adopt the server position when it is ahead (e.g. after reconnect) or the player has paused.
-  useEffect(() => {
-    if (!me) return;
-    setLocalIndex((current) => (me.position > current || Date.now() - lastTypedAt.current > 750 ? me.position : current));
-  }, [me?.position]);
-  useEffect(() => {
-    const onResize = () => setLayoutTick((value) => value + 1);
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
-
-  const otherKey = others.map((player) => `${player.playerId}:${player.position}`).join('|');
-  useLayoutEffect(() => {
-    const spotAt = (index: number): CaretSpot | undefined => {
-      const span = charRefs.current[Math.min(index, text.length - 1)];
-      if (!span) return undefined;
-      const atEnd = index >= text.length;
-      return { x: span.offsetLeft + (atEnd ? span.offsetWidth : 0), y: span.offsetTop, h: span.offsetHeight };
-    };
-    const next: Record<string, CaretSpot> = {};
-    const mine = spotAt(localIndex);
-    if (mine) next[playerId || 'me'] = mine;
-    for (const player of others) {
-      const spot = spotAt(player.position);
-      if (spot) next[player.playerId] = spot;
-    }
-    setCaretSpots(next);
-  }, [text, localIndex, otherKey, layoutTick, playerId]);
-
-  const submit = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const value = event.target.value;
-    event.target.value = '';
-    if (!value || !live) return;
-    const char = value[value.length - 1] ?? '';
-    const index = localIndex;
-    lastTypedAt.current = Date.now();
-    socket.emit(CLIENT_EVENTS.KEYSTROKE, { char, index });
-    if (char === text[index]) {
-      setErrorPulse(0);
-      setLocalIndex(index + 1);
-    } else {
-      setErrorPulse((count) => count + 1);
-    }
-  };
-
-  const myColor = '#f7c948';
-  const mySpot = caretSpots[playerId || 'me'];
-  return <main className="shell race" onClick={() => inputRef.current?.focus()}>
-    <div className="race-header"><span>{me?.wpm.toFixed(1) ?? '0.0'} WPM</span><span>{me?.accuracy ?? 100}% accuracy</span></div>
-    {countdown && seconds > 0 && <div className="countdown">{seconds}</div>}
-    <div className="track" ref={trackRef}>
-      {text.split('').map((char, index) => {
-        const isWrong = index === localIndex && errorPulse > 0;
-        return <span
-          key={isWrong ? `${index}-err-${errorPulse}` : `${index}`}
-          ref={(node) => { charRefs.current[index] = node; }}
-          className={index < localIndex ? 'correct' : isWrong ? 'incorrect' : index === localIndex ? 'current' : ''}
-        >{char}</span>;
-      })}
-      {others.map((player, order) => {
-        const spot = caretSpots[player.playerId];
-        if (!spot) return null;
-        const color = OPPONENT_COLORS[order % OPPONENT_COLORS.length];
-        return <div key={player.playerId} className={`caret opponent ${player.status === 'disconnected' ? 'offline' : ''}`} style={{ transform: `translate(${spot.x}px, ${spot.y}px)`, height: spot.h, '--caret-color': color } as React.CSSProperties}>
-          <span className="caret-name">{player.username}</span>
-        </div>;
-      })}
-      {mySpot && <div className="caret mine" style={{ transform: `translate(${mySpot.x}px, ${mySpot.y}px)`, height: mySpot.h, '--caret-color': myColor } as React.CSSProperties} />}
-    </div>
-    <input ref={inputRef} className="capture" autoFocus onChange={submit} />
-  </main>;
-}
-
-interface CaretSpot { x: number; y: number; h: number }
-const OPPONENT_COLORS = ['#72b7ff', '#ff7ab6', '#7ee787', '#c39bff'];
-
-function Results({ results, onAgain, onLeave }: { results: RaceResultsPayload; onAgain: () => void; onLeave: () => void }) {
-  return <main className="shell"><h2>Results</h2><table><thead><tr><th>#</th><th>Name</th><th>WPM</th><th>Accuracy</th></tr></thead><tbody>{results.results.map((result) => <tr key={result.playerId}><td>{result.rank}</td><td>{result.username}</td><td>{result.wpm.toFixed(1)}</td><td>{result.accuracy}%</td></tr>)}</tbody></table><button onClick={onAgain}>Race again</button><button className="link" onClick={onLeave}>Leave</button></main>;
+  return <div className={`app ${focusing ? 'focus-typing' : ''}`}>
+    <Header roomCode={room?.code} onHome={() => { if (!room) setScreen('home'); }} onPalette={() => setPalette({})} onSettings={() => setSettingsOpen(true)} />
+    <main className="stage">{content}</main>
+    <Footer quickAction={quickAction?.label} onTheme={() => setPalette({ menu: 'theme' })} />
+    {palette && <CommandPalette commands={commands} initialMenu={palette.menu} onClose={closeOverlays} />}
+    {settingsOpen && <SettingsPanel onClose={closeOverlays} />}
+    <Toast message={toast} />
+  </div>;
 }

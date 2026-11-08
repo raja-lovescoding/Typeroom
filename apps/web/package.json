@@ -10,6 +10,12 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@fontsource/fira-code": "^5",
+    "@fontsource/ibm-plex-mono": "^5",
+    "@fontsource/jetbrains-mono": "^5",
+    "@fontsource/lexend": "^5",
+    "@fontsource/roboto-mono": "^5",
+    "@fontsource/source-code-pro": "^5",
     "@typeroom/shared": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
