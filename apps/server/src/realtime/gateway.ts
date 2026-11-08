@@ -21,20 +21,59 @@ import { RateLimiter } from '../lib/rateLimiter.js';
 import { RoomManager, type Room } from '../services/roomManager.js';
 import { TextProvider } from '../services/textProvider.js';
 
-const COUNTDOWN_MS = 5_000;
-const RACE_LIMIT_MS = 120_000;
-const DISCONNECT_GRACE_MS = 20_000;
-
 interface Session extends GuestSession {
   roomCode?: string;
 }
 
-export function createRealtimeServer(httpServer: HttpServer): Server {
-  const io = new Server(httpServer, { cors: { origin: env.CLIENT_ORIGIN } });
+export interface RaceTextSource {
+  getRaceText(): string;
+}
+
+/** Tunables for the realtime gateway. Production uses the defaults; tests and load tests shorten them. */
+export interface RealtimeOptions {
+  countdownMs: number;
+  raceLimitMs: number;
+  disconnectGraceMs: number;
+  tickIntervalMs: number;
+  joinRateLimit: { limit: number; windowMs: number };
+  corsOrigin: string;
+  textProvider: RaceTextSource;
+}
+
+/** Live counts of in-memory state, used to assert that rooms and timers are cleaned up. */
+export interface RealtimeStats {
+  rooms: number;
+  sessions: number;
+  timers: { countdown: number; tick: number; finish: number; disconnect: number; bot: number; total: number };
+}
+
+export interface RealtimeServer {
+  io: Server;
+  inspect(): RealtimeStats;
+  /** Closes every room (clearing all of its timers) and shuts down Socket.IO and the underlying HTTP server. */
+  close(): Promise<void>;
+}
+
+export const DEFAULT_REALTIME_OPTIONS: Omit<RealtimeOptions, 'textProvider' | 'corsOrigin'> = {
+  countdownMs: 5_000,
+  raceLimitMs: 120_000,
+  disconnectGraceMs: 20_000,
+  tickIntervalMs: 100,
+  joinRateLimit: { limit: 10, windowMs: 60_000 },
+};
+
+export function createRealtimeServer(httpServer: HttpServer, overrides: Partial<RealtimeOptions> = {}): RealtimeServer {
+  const options: RealtimeOptions = {
+    ...DEFAULT_REALTIME_OPTIONS,
+    corsOrigin: env.CLIENT_ORIGIN,
+    textProvider: new TextProvider(),
+    ...overrides,
+  };
+  const { countdownMs: COUNTDOWN_MS, raceLimitMs: RACE_LIMIT_MS, disconnectGraceMs: DISCONNECT_GRACE_MS, textProvider } = options;
+  const io = new Server(httpServer, { cors: { origin: options.corsOrigin } });
   const rooms = new RoomManager();
-  const joinLimiter = new RateLimiter(10, 60_000);
+  const joinLimiter = new RateLimiter(options.joinRateLimit.limit, options.joinRateLimit.windowMs);
   const sessions = new Map<string, Session>();
-  const textProvider = new TextProvider();
   const bots = new Map<string, BotPlayer>();
   const botTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -48,6 +87,16 @@ export function createRealtimeServer(httpServer: HttpServer): Server {
     for (const key of bots.keys()) {
       if (key.startsWith(`${code}:`)) bots.delete(key);
     }
+  };
+
+  const clearDisconnectTimers = (room: Room) => {
+    for (const timer of room.disconnectTimers.values()) clearTimeout(timer);
+    room.disconnectTimers.clear();
+  };
+
+  const closeRoom = (code: string) => {
+    clearBotTimers(code);
+    rooms.close(code);
   };
 
   const sendError = (socket: Socket, message: string, acknowledge?: (value: unknown) => void) => {
@@ -70,6 +119,9 @@ export function createRealtimeServer(httpServer: HttpServer): Server {
     io.to(room.code).emit(SERVER_EVENTS.RACE_RESULTS, payload);
     if (room.tickTimer) clearInterval(room.tickTimer);
     if (room.finishTimer) clearTimeout(room.finishTimer);
+    delete room.tickTimer;
+    delete room.finishTimer;
+    clearDisconnectTimers(room);
     clearBotTimers(room.code);
   };
 
@@ -114,10 +166,12 @@ export function createRealtimeServer(httpServer: HttpServer): Server {
   const startRace = (room: Room) => {
     const startsAt = room.startsAt ?? Date.now() + COUNTDOWN_MS;
     room.countdownTimer = setTimeout(() => {
+      delete room.countdownTimer;
       if (room.state !== 'COUNTDOWN') return;
       rooms.beginRace(room, startsAt);
-      room.tickTimer = setInterval(() => tick(room), 100);
+      room.tickTimer = setInterval(() => tick(room), options.tickIntervalMs);
       room.finishTimer = setTimeout(() => {
+        delete room.finishTimer;
         for (const player of room.players.values()) {
           if (player.status === 'racing' || player.status === 'disconnected') rooms.markDnf(room, player.playerId);
         }
@@ -234,8 +288,8 @@ export function createRealtimeServer(httpServer: HttpServer): Server {
       if (session?.roomCode) {
         const room = rooms.get(session.roomCode);
         if (room) {
-          clearBotTimers(room.code);
-          rooms.leaveRoom(room.code, session.playerId);
+          const closed = rooms.leaveRoom(room.code, session.playerId);
+          if (closed) clearBotTimers(room.code);
         }
         delete session.roomCode;
       }
@@ -247,11 +301,38 @@ export function createRealtimeServer(httpServer: HttpServer): Server {
       if (!session || !room || room.state !== 'RACING') return;
       rooms.markDisconnected(room, session.playerId);
       emitRoomState(room);
+      const previous = room.disconnectTimers.get(session.playerId);
+      if (previous) clearTimeout(previous);
       room.disconnectTimers.set(session.playerId, setTimeout(() => {
+        room.disconnectTimers.delete(session.playerId);
+        if (room.state !== 'RACING') return;
         rooms.markDnf(room, session.playerId);
         tick(room);
       }, DISCONNECT_GRACE_MS));
     });
   });
-  return io;
+
+  const inspect = (): RealtimeStats => {
+    const timers = { countdown: 0, tick: 0, finish: 0, disconnect: 0, bot: botTimers.size, total: 0 };
+    let roomCount = 0;
+    for (const room of rooms.list()) {
+      roomCount += 1;
+      if (room.countdownTimer) timers.countdown += 1;
+      if (room.tickTimer) timers.tick += 1;
+      if (room.finishTimer) timers.finish += 1;
+      timers.disconnect += room.disconnectTimers.size;
+    }
+    timers.total = timers.countdown + timers.tick + timers.finish + timers.disconnect + timers.bot;
+    return { rooms: roomCount, sessions: sessions.size, timers };
+  };
+
+  const close = async (): Promise<void> => {
+    for (const room of [...rooms.list()]) closeRoom(room.code);
+    sessions.clear();
+    await new Promise<void>((resolve) => {
+      void io.close(() => resolve());
+    });
+  };
+
+  return { io, inspect, close };
 }

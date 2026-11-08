@@ -88,6 +88,10 @@ export class RoomManager {
     return this.rooms.get(code);
   }
 
+  list(): IterableIterator<Room> {
+    return this.rooms.values();
+  }
+
   joinRoom(code: string, player: Omit<RoomPlayer, 'position' | 'correctChars' | 'errors' | 'keystrokeTimes' | 'status' | 'finishTimeMs'>): Room {
     const room = this.rooms.get(code);
     if (!room) throw new Error('Room not found');

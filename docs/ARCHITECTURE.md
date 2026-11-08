@@ -20,6 +20,18 @@
 - **Start:** only the host can request `start_race` from `LOBBY`. The room manager picks a text and server start time (`now + 5000ms`); the gateway broadcasts both in `race_countdown`, then transitions to `RACING`.
 - **Keystroke:** the client sends only `{ char, index }`. The gateway validates the shared schema and passes the request with server arrival time to the same room-manager handler used by bots. Wrong indexes, pre-start input, finished players, and burst traffic are rejected.
 - **Tick:** while racing, a 10Hz timer computes each player's position, WPM, accuracy, and status on the server and broadcasts `race_progress`. Results are emitted when all players finish/DNF or at 120 seconds.
-- **Disconnect:** a socket close marks a racing player disconnected without stopping the clock. A 20-second timer marks them DNF unless their session token reconnects and reattaches the stored player state.
+- **Disconnect:** a socket close marks a racing player disconnected without stopping the clock. A 20-second timer marks them DNF unless their session token reconnects and reattaches the stored player state. When the race ends (everyone finished/DNF, or the time limit), any pending disconnect timers are cancelled so nothing fires into the results screen.
+- **Cleanup:** when a room closes (the host or the last player leaves), the room's countdown, tick, finish, disconnect and bot timers are all cleared. A non-host leaving does not stop the room's bot.
+
+## Realtime gateway configuration
+
+`createRealtimeServer(httpServer, overrides?)` takes optional `RealtimeOptions` (countdown, race limit, disconnect grace, tick interval, join rate limit, CORS origin, text provider). Production passes none, so the defaults above apply. It returns `{ io, inspect(), close() }`: `inspect()` reports live room, session and timer counts, and `close()` closes every room and shuts down Socket.IO.
+
+## Testing
+
+- `apps/server/tests/domain.test.ts`: unit tests for the pure domain and room manager.
+- `apps/server/tests/realtime.integration.test.ts`: boots the real gateway in-process on an ephemeral port (no Express, no PostgreSQL) and drives it with real `socket.io-client` connections. It covers the full lifecycle (create, join, countdown, race, results, race again), rejection of inflated or malformed positions and keystroke bursts, reconnect within and after the grace window, and timer cleanup, both through `inspect()` and through Node's active-timer count.
+- `apps/server/tests/harness/` is the reusable harness. `RaceClient` (client.ts) only needs a URL, so the planned load-test script can point it at a deployed server. `startTestServer` (server.ts) boots an in-process server with fast timings and fixed texts.
+- `tsconfig.test.json` typechecks the tests as part of `pnpm typecheck`.
 
 Live rooms and timers are intentionally process-local in this first playable version. Persistence, accounts, custom text, and multi-process scaling remain TODOs.

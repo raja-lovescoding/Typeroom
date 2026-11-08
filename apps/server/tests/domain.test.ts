@@ -60,7 +60,8 @@ describe('authoritative scoring', () => {
     expect(manager.handleKeystroke(room, 'human', 'a', 1, 1_001).reason).toBe('wrong_index');
     expect(manager.handleKeystroke(room, 'human', 'a', 0, 1_001).accepted).toBe(true);
     expect(manager.handleKeystroke(room, 'human', 'b', 1, 1_002).finished).toBe(true);
-    expect(manager.handleKeystroke(room, 'x', 2, 1_003).reason).toBe('not_racing');
+    expect(manager.handleKeystroke(room, 'human', 'x', 2, 1_003).reason).toBe('finished');
+    expect(manager.handleKeystroke(room, 'ghost', 'x', 0, 1_003).reason).toBe('not_racing');
     const burstRoom = manager.createRoom({ playerId: 'burst', username: 'Burst', token: 'secret-token-123457', connected: true, isBot: false });
     manager.startRace(burstRoom, 'a'.repeat(30), 2_000, 0);
     manager.beginRace(burstRoom, 2_000);
