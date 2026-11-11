@@ -65,7 +65,12 @@ describe('realtime gateway (Socket.IO integration)', () => {
     await host.startRace();
     for (const client of [host, guest]) {
       const countdown = await client.waitFor(RACE_COUNTDOWN);
-      expect(countdown).toEqual({ startsInMs: server!.options.countdownMs, text: 'go far' });
+      expect(countdown).toEqual({
+        startsInMs: server!.options.countdownMs,
+        text: 'go far',
+        config: { mode: 'words', count: 25, punctuation: false },
+        timeLimitMs: server!.options.raceLimitMs,
+      });
       await client.waitFor(ROOM_STATE, (state) => state.state === 'COUNTDOWN');
     }
 

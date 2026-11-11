@@ -1,25 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  CLIENT_EVENTS,
-  errorSchema,
-  raceCountdownSchema,
-  raceProgressSchema,
-  raceResultsSchema,
-  roomStateSchema,
-  SERVER_EVENTS,
-  type RaceProgressPayload,
-  type RaceResultsPayload,
-  type RoomStateMessage,
-} from '@typeroom/shared';
+import { useCallback, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
+import { QUOTE_LENGTHS, TIME_MODE_SECONDS, WORD_MODE_COUNTS, type QuickRaceConfig } from '@typeroom/shared';
 import { CommandPalette, type Command } from '../components/CommandPalette.js';
 import { Footer, Header, Toast } from '../components/Chrome.js';
+import { ErrorBoundary } from '../components/ErrorBoundary.js';
 import { SettingsPanel } from '../components/SettingsPanel.js';
-import { Home, Lobby, type BotSpeed } from '../features/lobby/Lobby.js';
+import { useGame, type Game } from '../features/game/useGame.js';
+import { Home, Lobby } from '../features/lobby/Lobby.js';
+import { Queue } from '../features/queue/Queue.js';
 import { FOCUS_TYPING_EVENT, Race } from '../features/race/Race.js';
-import { createTypingLog, type TypingLog } from '../features/race/typingStats.js';
 import { Results } from '../features/results/Results.js';
+import { describeRaceConfig, loadQuickRaceConfig, saveRaceConfig } from '../lib/raceConfig.js';
+import { navigate, roomCodeFromPath, usePageTitle, usePathname } from '../lib/router.js';
 import { session } from '../lib/session.js';
-import { socket } from '../lib/socket.js';
+import { About } from '../pages/About.js';
+import { Contact } from '../pages/Contact.js';
+import { Privacy } from '../pages/Privacy.js';
+import { SettingsPage } from '../pages/SettingsPage.js';
+import { ErrorPage, NotFound } from '../pages/Status.js';
+import { Terms } from '../pages/Terms.js';
 import {
   CARET_STYLES, FONT_SIZE, TYPING_FONTS, getSettings, previewTheme, updateSettings, useSettings, type Settings,
 } from '../settings/settings.js';
@@ -28,148 +26,45 @@ import '../styles/fonts.js';
 import '../styles/themes.css';
 import '../styles/global.css';
 
-type Screen = 'home' | 'lobby' | 'race' | 'results';
-type JoinResponse = { playerId?: string; token?: string; room?: RoomStateMessage; error?: string };
-
 const QUICK_ACTION_WINDOW_MS = 1_500;
+
+const PAGES: Record<string, ComponentType> = {
+  '/settings': SettingsPage,
+  '/about': About,
+  '/privacy': Privacy,
+  '/terms': Terms,
+  '/contact': Contact,
+};
 
 export function App() {
   const settings = useSettings();
-  const [screen, setScreen] = useState<Screen>('home');
-  const [room, setRoom] = useState<RoomStateMessage>();
-  const [progress, setProgress] = useState<RaceProgressPayload>();
-  const [results, setResults] = useState<RaceResultsPayload>();
-  const [countdown, setCountdown] = useState<{ startsInMs: number; text: string }>();
-  const [playerId, setPlayerId] = useState('');
-  const [raceSeq, setRaceSeq] = useState(0);
-  const [raceDurationMs, setRaceDurationMs] = useState(0);
+  const pathname = usePathname();
+  const [toast, setToast] = useState<string>();
+  const notify = useCallback((message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast((current) => (current === message ? undefined : current)), 3_000);
+  }, []);
+  const game = useGame(notify);
   const [palette, setPalette] = useState<{ menu?: string } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [typing, setTyping] = useState(false);
-  const [toast, setToast] = useState<string>();
-  const logRef = useRef<TypingLog>(createTypingLog());
-  const autoStartRef = useRef(false);
-  const tabArmedAt = useRef(0);
-  const routeCode = useMemo(() => window.location.pathname.match(/^\/r\/([A-Z2-9]{6})$/)?.[1], []);
+  const [tabArmedAt, setTabArmedAt] = useState(0);
+  const [roomOpen, setRoomOpen] = useState(false);
+  const [selectedTime, setSelectedTime] = useState<(typeof TIME_MODE_SECONDS)[number]>(() => {
+    const config = loadQuickRaceConfig();
+    return config.mode === 'time' ? config.seconds : 30;
+  });
 
-  const isHost = Boolean(room && playerId && room.players[0]?.playerId === playerId);
-  const onlyBots = Boolean(room && room.players.every((player) => player.playerId === playerId || player.isBot));
+  const routeCode = roomCodeFromPath(pathname);
+  const inRoomView = Boolean(routeCode && game.room?.code === routeCode && game.screen);
+  const screen = inRoomView ? game.screen : null;
+  const isPlayRoute = pathname === '/' || Boolean(routeCode);
 
-  const notify = useCallback((message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast((current) => (current === message ? undefined : current)), 2_400);
-  }, []);
+  useEffect(() => { if (screen !== 'race') setTyping(false); }, [screen]);
 
-  const enterRoom = useCallback((response: JoinResponse) => {
-    if (response.error) return notify(response.error);
-    if (response.playerId) setPlayerId(response.playerId);
-    if (response.token) session.setToken(response.token);
-    if (response.room) {
-      setRoom(response.room);
-      window.history.replaceState(null, '', `/r/${response.room.code}`);
-      if (response.room.state === 'LOBBY') setScreen('lobby');
-    }
-  }, [notify]);
-
-  const join = useCallback((code?: string) => {
-    const username = session.getUsername() || 'Guest';
-    socket.emit(CLIENT_EVENTS.JOIN_ROOM, { code, username, token: session.getToken() ?? undefined }, enterRoom);
-  }, [enterRoom]);
-
-  useEffect(() => {
-    const onRoom = (raw: unknown) => {
-      const parsed = roomStateSchema.safeParse(raw);
-      if (!parsed.success) return;
-      setRoom(parsed.data);
-      if (parsed.data.state === 'LOBBY') {
-        setScreen('lobby');
-        // Quick restart against bots: race-again goes straight into the next countdown.
-        if (autoStartRef.current) {
-          autoStartRef.current = false;
-          socket.emit(CLIENT_EVENTS.START_RACE, {});
-        }
-      }
-    };
-    const onCountdown = (raw: unknown) => {
-      const parsed = raceCountdownSchema.safeParse(raw);
-      if (!parsed.success) return;
-      // A new race starts: drop the previous race's progress so its old text isn't shown.
-      logRef.current = createTypingLog(Date.now() + parsed.data.startsInMs);
-      setProgress(undefined);
-      setResults(undefined);
-      setCountdown(parsed.data);
-      setRaceSeq((value) => value + 1);
-      setScreen('race');
-    };
-    const onProgress = (raw: unknown) => {
-      const parsed = raceProgressSchema.safeParse(raw);
-      if (!parsed.success) return;
-      setProgress(parsed.data);
-      setScreen('race');
-    };
-    const onResults = (raw: unknown) => {
-      const parsed = raceResultsSchema.safeParse(raw);
-      if (!parsed.success) return;
-      const startedAt = logRef.current.startedAt;
-      setRaceDurationMs(startedAt === null ? 0 : Date.now() - startedAt);
-      setResults(parsed.data);
-      setTyping(false);
-      setScreen('results');
-    };
-    const onError = (raw: unknown) => {
-      const parsed = errorSchema.safeParse(raw);
-      if (parsed.success) notify(parsed.data.error);
-    };
-    const onConnect = () => { if (routeCode) join(routeCode); };
-    socket.on('connect', onConnect);
-    socket.on(SERVER_EVENTS.ROOM_STATE, onRoom);
-    socket.on(SERVER_EVENTS.RACE_COUNTDOWN, onCountdown);
-    socket.on(SERVER_EVENTS.RACE_PROGRESS, onProgress);
-    socket.on(SERVER_EVENTS.RACE_RESULTS, onResults);
-    socket.on(SERVER_EVENTS.ERROR, onError);
-    if (routeCode && socket.connected) join(routeCode);
-    return () => {
-      socket.off('connect', onConnect);
-      socket.off(SERVER_EVENTS.ROOM_STATE, onRoom);
-      socket.off(SERVER_EVENTS.RACE_COUNTDOWN, onCountdown);
-      socket.off(SERVER_EVENTS.RACE_PROGRESS, onProgress);
-      socket.off(SERVER_EVENTS.RACE_RESULTS, onResults);
-      socket.off(SERVER_EVENTS.ERROR, onError);
-    };
-  }, [routeCode, join, notify]);
-
-  // ---- actions --------------------------------------------------------------------------------
-
-  const create = (bot?: BotSpeed) => {
-    const username = session.getUsername() || 'Guest';
-    socket.emit(CLIENT_EVENTS.CREATE_ROOM, { username, token: session.getToken() ?? undefined, ...(bot ? { bot: { targetWpm: bot } } : {}) }, (response: JoinResponse) => {
-      enterRoom(response);
-      if (response.room && bot) socket.emit(CLIENT_EVENTS.START_RACE, {});
-    });
-  };
-  const startRace = () => socket.emit(CLIENT_EVENTS.START_RACE, {});
-  const raceAgain = () => {
-    autoStartRef.current = isHost && onlyBots;
-    setResults(undefined);
-    socket.emit(CLIENT_EVENTS.RACE_AGAIN, {});
-  };
-  const leave = () => {
-    socket.emit(CLIENT_EVENTS.LEAVE_ROOM);
-    setRoom(undefined);
-    setProgress(undefined);
-    setResults(undefined);
-    setCountdown(undefined);
-    setScreen('home');
-    window.history.replaceState(null, '', '/');
-  };
-  const copyLink = () => {
-    if (!room) return;
-    const link = `${window.location.origin}/r/${room.code}`;
-    navigator.clipboard.writeText(link).then(() => notify('Invite link copied'), () => notify(link));
-  };
-
-  const quickAction = screen === 'results' ? { label: 'race again', run: raceAgain }
-    : screen === 'lobby' && isHost ? { label: 'start race', run: startRace }
+  const quickAction = screen === 'results' ? { label: 'exit race', run: game.leave }
+    : screen === 'lobby' && game.isHost ? { label: 'start race', run: game.startRace }
+    : !screen && !game.queue ? { label: 'quick race', run: () => game.quickRace(loadQuickRaceConfig()) }
     : undefined;
 
   const closeOverlays = () => {
@@ -194,16 +89,16 @@ export function App() {
       if (event.key === 'Tab') {
         // In a race Tab must never move focus off the text; elsewhere it arms the quick action.
         if (screen === 'race' || quickAction) event.preventDefault();
-        if (quickAction) tabArmedAt.current = Date.now();
+        if (quickAction) setTabArmedAt(Date.now());
         return;
       }
-      if (event.key === 'Enter' && quickAction && Date.now() - tabArmedAt.current < QUICK_ACTION_WINDOW_MS) {
+      if (event.key === 'Enter' && quickAction && Date.now() - tabArmedAt < QUICK_ACTION_WINDOW_MS) {
         event.preventDefault();
-        tabArmedAt.current = 0;
+        setTabArmedAt(0);
         quickAction.run();
         return;
       }
-      if (event.key !== 'Shift') tabArmedAt.current = 0;
+      if (event.key !== 'Shift' && tabArmedAt) setTabArmedAt(0);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -218,19 +113,128 @@ export function App() {
   }, [typing]);
   const focusing = settings.focusMode && screen === 'race' && typing && !overlayOpen;
 
-  // ---- command palette ------------------------------------------------------------------------
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
+  const commands = useCommands(game, screen, settings, openSettings);
 
-  const commands = useMemo<Command[]>(() => {
+  // ---- render ---------------------------------------------------------------------------------
+
+  let content: ReactNode;
+  const Page = PAGES[pathname.replace(/\/+$/, '') || '/'];
+  if (Page) content = <Page />;
+  else if (isPlayRoute) content = <PlayView game={game} screen={screen} routeCode={routeCode} roomOpen={roomOpen} onTyping={() => setTyping(true)} />;
+  else content = <NotFound />;
+
+  return <div className={`app ${focusing ? 'focus-typing' : ''} ${isPlayRoute ? 'is-play' : 'is-page'}`}>
+    <a className="skip-link" href="#main">Skip to content</a>
+    <Header
+      roomCode={game.room?.code}
+      onPalette={() => setPalette({})}
+      onQuickRace={() => game.quickRace(loadQuickRaceConfig())}
+      onRoom={() => setRoomOpen((open) => !open)}
+      selectedTime={selectedTime}
+      onTimeChange={(seconds) => {
+        const config: QuickRaceConfig = { mode: 'time', seconds, punctuation: false };
+        saveRaceConfig(config);
+        setSelectedTime(seconds);
+      }}
+    />
+    <main id="main" className="stage">
+      <ErrorBoundary resetKey={pathname} fallback={(props) => <ErrorPage {...props} />}>{content}</ErrorBoundary>
+    </main>
+    <Footer quickAction={quickAction?.label} showShortcuts={isPlayRoute} onTheme={() => setPalette({ menu: 'theme' })} />
+    {palette && <CommandPalette commands={commands} initialMenu={palette.menu} onClose={closeOverlays} />}
+    {settingsOpen && <SettingsPanel onClose={closeOverlays} />}
+    <Toast message={toast} />
+  </div>;
+}
+
+function PlayView({ game, screen, routeCode, roomOpen, onTyping }: {
+  game: Game; screen: Game['screen']; routeCode: string | undefined; roomOpen: boolean; onTyping: () => void;
+}) {
+  const { room, progress, results, countdown, playerId } = game;
+  usePageTitle(game.queue ? 'Finding a race' : screen === 'race' ? 'Racing' : screen === 'results' ? 'Results' : screen === 'lobby' && room ? `Room ${room.code}` : undefined);
+
+  // Quick Race lobby, until the race countdown takes over.
+  if (game.queue) return <Queue queue={game.queue} playerId={playerId} onCancel={game.cancelQueue} />;
+
+  if (screen === 'lobby' && room) {
+    return <Lobby room={room} playerId={playerId} isHost={game.isHost} onStart={game.startRace} onCopyLink={game.copyLink} onConfig={game.setConfig} />;
+  }
+  if (screen === 'race' && (progress || countdown)) {
+    return <Race key={game.raceSeq} playerId={playerId} countdown={countdown} progress={progress} log={game.log} onTyping={onTyping} onExit={game.leave} />;
+  }
+  if (screen === 'results' && results) {
+    const me = progress?.players.find((player) => player.playerId === playerId);
+    return <Results
+      results={results}
+      playerId={playerId}
+      log={game.log}
+      textLength={progress?.text.length ?? countdown?.text.length ?? 0}
+      finalPosition={me?.position ?? 0}
+      raceDurationMs={game.raceDurationMs}
+      roster={room?.players ?? results.results}
+      config={countdown?.config}
+      source={countdown?.source}
+      onAgain={game.raceAgain}
+      onLeave={game.leave}
+      quick={room?.kind === 'quick'}
+    />;
+  }
+  // A room link with a saved nickname joins straight away; show a holding state meanwhile.
+  if (routeCode && session.getUsername() && game.room?.code !== routeCode) {
+    return <p className="muted joining" role="status">Joining room {routeCode}…</p>;
+  }
+  return <Home
+    onCreate={game.create}
+    onJoin={game.join}
+    onQuickRace={game.quickRace}
+    initialCode={routeCode}
+    currentRoom={game.room && game.room.code !== routeCode ? game.room.code : undefined}
+    roomOpen={roomOpen}
+  />;
+}
+
+// ---- command palette ----------------------------------------------------------------------------
+
+function useCommands(game: Game, screen: Game['screen'], settings: Settings, openSettings: () => void): Command[] {
+  return useMemo<Command[]>(() => {
     const list: Command[] = [];
-    if (screen === 'lobby' && isHost) list.push({ id: 'start', label: 'Start race', hint: 'tab + enter', run: startRace });
-    if (screen === 'results') list.push({ id: 'again', label: 'Race again', hint: 'tab + enter', run: raceAgain });
-    if (room) {
-      list.push({ id: 'copy-link', label: 'Copy room link', keywords: 'invite share url', run: copyLink });
-      list.push({ id: 'leave', label: 'Leave room', keywords: 'exit quit home', run: leave });
+    if (game.queue && !game.queue.matched) {
+      list.push({ id: 'cancel-queue', label: 'Cancel quick race', keywords: 'leave queue matchmaking stop', run: game.cancelQueue });
+    } else if (!game.queue && (!game.room || screen === 'results')) {
+      list.push({ id: 'quick-race', label: game.room?.kind === 'quick' ? 'Find another race' : 'Quick race', keywords: 'matchmaking play random public', run: () => game.quickRace() });
+    }
+    if (screen === 'lobby' && game.isHost) {
+      list.push({ id: 'start', label: 'Start race', hint: 'tab + enter', run: game.startRace });
+      if (game.room) {
+        const current = game.room.config;
+        list.push({
+          id: 'mode', label: 'Change race mode…', keywords: 'time words quote length duration', hint: describeRaceConfig(current),
+          children: () => [
+            ...TIME_MODE_SECONDS.map((seconds) => ({
+              id: `time-${seconds}`, label: `time ${seconds}s`, group: 'time', active: current.mode === 'time' && current.seconds === seconds,
+              run: () => game.setConfig({ mode: 'time', seconds, punctuation: 'punctuation' in current ? current.punctuation : false }),
+            })),
+            ...WORD_MODE_COUNTS.map((count) => ({
+              id: `words-${count}`, label: `${count} words`, group: 'words', active: current.mode === 'words' && current.count === count,
+              run: () => game.setConfig({ mode: 'words', count, punctuation: 'punctuation' in current ? current.punctuation : false }),
+            })),
+            ...QUOTE_LENGTHS.map((length) => ({
+              id: `quote-${length}`, label: `${length} quote`, group: 'quote', active: current.mode === 'quote' && current.length === length,
+              run: () => game.setConfig({ mode: 'quote', length }),
+            })),
+          ],
+        });
+      }
+    }
+    if (screen === 'results' && game.room?.kind !== 'quick') list.push({ id: 'again', label: 'Race again', hint: 'tab + enter', run: game.raceAgain });
+    if (game.room) {
+      if (game.room.kind !== 'quick') list.push({ id: 'copy-link', label: 'Copy room link', keywords: 'invite share url', run: game.copyLink });
+      list.push({ id: 'leave', label: 'Leave room', keywords: 'exit quit home', run: game.leave });
     }
     const current = getSettings();
-    const toggle = (key: keyof Settings & ('smoothCaret' | 'ghostLabels' | 'highlightErrors' | 'focusMode'), label: string): Command => ({
-      id: `toggle-${key}`, label, group: 'toggle', hint: current[key] ? 'on' : 'off', run: () => updateSettings({ [key]: !current[key] }),
+    const toggle = (key: keyof Settings & ('smoothCaret' | 'ghostLabels' | 'highlightErrors' | 'focusMode' | 'liveStats' | 'sound'), label: string, keywords?: string): Command => ({
+      id: `toggle-${key}`, label, group: 'toggle', hint: current[key] ? 'on' : 'off', ...(keywords ? { keywords } : {}), run: () => updateSettings({ [key]: !current[key] }),
     });
     list.push(
       {
@@ -263,45 +267,20 @@ export function App() {
         children: () => CARET_STYLES.map((style) => ({ id: `caret-${style}`, label: style, active: style === getSettings().caretStyle, run: () => updateSettings({ caretStyle: style }) })),
       },
       toggle('smoothCaret', 'Smooth caret'),
+      toggle('liveStats', 'Live stats', 'wpm accuracy hide show'),
+      toggle('sound', 'Typing sounds', 'audio click mute'),
       toggle('ghostLabels', 'Racer name labels'),
       toggle('highlightErrors', 'Highlight errors'),
       toggle('focusMode', 'Focus mode'),
-      { id: 'settings', label: 'Open settings', keywords: 'preferences options', run: () => setSettingsOpen(true) },
+      { id: 'settings', label: 'Open settings', keywords: 'preferences options', run: openSettings },
+      { id: 'go-home', label: 'Go to home', group: 'go', keywords: 'play start', run: () => navigate(game.room ? `/r/${game.room.code}` : '/') },
+      { id: 'go-settings', label: 'Go to settings page', group: 'go', run: () => navigate('/settings') },
+      { id: 'go-about', label: 'Go to about', group: 'go', keywords: 'credits help', run: () => navigate('/about') },
+      { id: 'go-privacy', label: 'Go to privacy policy', group: 'go', run: () => navigate('/privacy') },
+      { id: 'go-terms', label: 'Go to terms of use', group: 'go', run: () => navigate('/terms') },
+      { id: 'go-contact', label: 'Go to contact', group: 'go', keywords: 'email bug report', run: () => navigate('/contact') },
     );
     return list;
     // `settings` is a dependency so hints reflect the latest values.
-  }, [screen, isHost, room, settings, onlyBots]);
-
-  // ---- render ---------------------------------------------------------------------------------
-
-  const me = progress?.players.find((player) => player.playerId === playerId);
-  let content;
-  if (screen === 'lobby' && room) {
-    content = <Lobby room={room} playerId={playerId} isHost={isHost} onStart={startRace} onCopyLink={copyLink} />;
-  } else if (screen === 'race' && (progress || countdown)) {
-    content = <Race key={raceSeq} playerId={playerId} countdown={countdown} progress={progress} log={logRef.current} onTyping={() => setTyping(true)} />;
-  } else if (screen === 'results' && results) {
-    content = <Results
-      results={results}
-      playerId={playerId}
-      log={logRef.current}
-      textLength={progress?.text.length ?? countdown?.text.length ?? 0}
-      finalPosition={me?.position ?? 0}
-      raceDurationMs={raceDurationMs}
-      roster={room?.players ?? results.results}
-      onAgain={raceAgain}
-      onLeave={leave}
-    />;
-  } else {
-    content = <Home onCreate={create} onJoin={join} initialCode={routeCode} />;
-  }
-
-  return <div className={`app ${focusing ? 'focus-typing' : ''}`}>
-    <Header roomCode={room?.code} onHome={() => { if (!room) setScreen('home'); }} onPalette={() => setPalette({})} onSettings={() => setSettingsOpen(true)} />
-    <main className="stage">{content}</main>
-    <Footer quickAction={quickAction?.label} onTheme={() => setPalette({ menu: 'theme' })} />
-    {palette && <CommandPalette commands={commands} initialMenu={palette.menu} onClose={closeOverlays} />}
-    {settingsOpen && <SettingsPanel onClose={closeOverlays} />}
-    <Toast message={toast} />
-  </div>;
+  }, [screen, game, settings, openSettings]);
 }

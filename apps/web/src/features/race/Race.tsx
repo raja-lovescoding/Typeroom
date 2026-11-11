@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
-import { CLIENT_EVENTS, type RacePlayer, type RaceProgressPayload } from '@typeroom/shared';
+import { CLIENT_EVENTS, type RaceCountdown, type RacePlayer, type RaceProgressPayload } from '@typeroom/shared';
+import { racerSuffix, RacerTag } from '../../components/RacerTag.js';
+import { playKeySound } from '../../lib/sound.js';
 import { socket } from '../../lib/socket.js';
 import { useSettings, type CaretStyle } from '../../settings/settings.js';
 import { caretColor, colorFor } from './colors.js';
@@ -10,17 +12,18 @@ const MAX_SHOWN_EXTRA = 12;
 
 interface Props {
   playerId: string;
-  countdown: { startsInMs: number; text: string } | undefined;
+  countdown: RaceCountdown | undefined;
   progress: RaceProgressPayload | undefined;
   /** Mutable log owned by the app so the results screen can read it. */
   log: TypingLog;
   onTyping: () => void;
+  onExit: () => void;
 }
 
 interface Spot { x: number; y: number; w: number; h: number }
 interface Segment { kind: 'word' | 'space'; start: number; end: number }
 
-export function Race({ playerId, countdown, progress, log, onTyping }: Props) {
+export function Race({ playerId, countdown, progress, log, onTyping, onExit }: Props) {
   const settings = useSettings();
   const inputRef = useRef<HTMLInputElement>(null);
   const charRefs = useRef<(HTMLSpanElement | null)[]>([]);
@@ -44,9 +47,13 @@ export function Race({ playerId, countdown, progress, log, onTyping }: Props) {
   const players = progress?.players ?? [];
   const me = players.find((player) => player.playerId === playerId);
   const others = players.filter((player) => player.playerId !== playerId);
-  const finished = localIndex >= text.length && text.length > 0;
+  const timeLimitMs = countdown?.timeLimitMs ?? null;
+  const timed = countdown?.config.mode === 'time';
+  const elapsedNow = log.startedAt === null ? 0 : Math.max(0, now - log.startedAt);
+  const timeUp = timed && timeLimitMs !== null && elapsedNow >= timeLimitMs;
+  const finished = (localIndex >= text.length && text.length > 0) || me?.status === 'finished';
   // Progress only arrives once the race is live, so typing is blocked during the countdown.
-  const live = Boolean(progress) && !finished && me?.status !== 'dnf';
+  const live = Boolean(progress) && !finished && !timeUp && me?.status !== 'dnf' && me?.status !== 'exited';
   const extraActive = missed.length > 0 && text[localIndex] === ' ';
   const segments = useMemo(() => segment(text), [text]);
   const currentWord = useMemo(() => {
@@ -122,6 +129,7 @@ export function Race({ playerId, countdown, progress, log, onTyping }: Props) {
     const t = Date.now() - (log.startedAt ?? Date.now());
     lastTypedAt.current = Date.now();
     socket.emit(CLIENT_EVENTS.KEYSTROKE, { char, index });
+    if (settings.sound) playKeySound(kind === 'correct' ? 'correct' : 'error', settings.soundVolume);
     log.keys.push({ t, kind, index });
     onTyping();
     if (kind === 'correct') {
@@ -151,6 +159,8 @@ export function Race({ playerId, countdown, progress, log, onTyping }: Props) {
   };
 
   const elapsed = log.startedAt === null ? 0 : Math.max(0, (finished && log.finishedAt !== null ? log.startedAt + log.finishedAt : now) - log.startedAt);
+  // Time mode counts down; every other mode counts up.
+  const clock = timed && timeLimitMs !== null ? Math.max(0, timeLimitMs - elapsed) : elapsed;
   const totalWords = segments.filter((item) => item.kind === 'word').length;
   const doneWords = segments.filter((item) => item.kind === 'word' && item.end <= localIndex && (text[item.end] === ' ' ? localIndex > item.end : true)).length;
   const mySpot = spots.self;
@@ -158,16 +168,17 @@ export function Race({ playerId, countdown, progress, log, onTyping }: Props) {
 
   return <section className="race" onClick={() => inputRef.current?.focus()}>
     <div className="stats-bar" aria-live="off">
-      <Stat label="wpm" value={Math.round(me?.wpm ?? 0)} accent />
-      <Stat label="acc" value={`${me?.accuracy ?? 100}%`} />
-      <Stat label="time" value={formatClock(elapsed)} />
-      <Stat label="words" value={`${doneWords}/${totalWords}`} />
+      {settings.liveStats && <Stat label="wpm" value={Math.round(me?.wpm ?? 0)} accent />}
+      {settings.liveStats && <Stat label="acc" value={`${me?.accuracy ?? 100}%`} />}
+      <Stat label={timed ? 'left' : 'time'} value={formatClock(clock, timed)} accent={!settings.liveStats || (timed && clock <= 5_000 && clock > 0)} />
+      <Stat label="words" value={timed ? doneWords : `${doneWords}/${totalWords}`} />
     </div>
 
     <div className="race-notices">
       {capsLock && <span className="notice warn" role="status">Caps Lock is on</span>}
       {me?.status === 'dnf' && <span className="notice">You did not finish this race</span>}
-      {finished && <span className="notice">Finished. Waiting for the others…</span>}
+      {finished && !timed && <span className="notice">Finished. Waiting for the others…</span>}
+      {timeUp && <span className="notice">Time's up. Waiting for results…</span>}
     </div>
 
     {countdown && seconds > 0 && !progress && <div className="countdown" aria-live="assertive">{seconds}</div>}
@@ -191,7 +202,7 @@ export function Race({ playerId, countdown, progress, log, onTyping }: Props) {
           const spot = spots[player.playerId];
           if (!spot) return null;
           return <Caret key={player.playerId} spot={spot} style="line" color={colorFor(players, player.playerId, playerId)} ghost
-            offline={player.status === 'disconnected'} label={settings.ghostLabels ? player.username : undefined} />;
+            offline={player.status === 'disconnected'} label={player.status === 'exited' ? `${player.username} · Exited` : settings.ghostLabels ? `${player.username}${racerSuffix(player)}` : undefined} />;
         })}
         {mySpot && <Caret spot={mySpot} style={settings.caretStyle} color="var(--accent)" idle={idle} />}
       </div>
@@ -214,7 +225,10 @@ export function Race({ playerId, countdown, progress, log, onTyping }: Props) {
       onBlur={() => setFocused(false)}
     />
 
-    <Standings players={players} playerId={playerId} textLength={text.length} />
+    {countdown?.source && <p className="race-source">— {countdown.source}</p>}
+
+    <Standings players={players} playerId={playerId} textLength={text.length} timed={timed} />
+    <button className="race-exit-button" onClick={onExit}>Exit race</button>
   </section>;
 
   function renderChar(index: number) {
@@ -248,14 +262,16 @@ function Stat({ label, value, accent }: { label: string; value: string | number;
   return <div className={`stat ${accent ? 'accent' : ''}`}><span className="stat-value">{value}</span><span className="stat-label">{label}</span></div>;
 }
 
-function Standings({ players, playerId, textLength }: { players: RacePlayer[]; playerId: string; textLength: number }) {
+function Standings({ players, playerId, textLength, timed }: { players: RacePlayer[]; playerId: string; textLength: number; timed: boolean }) {
   if (players.length === 0) return null;
   const ranked = [...players].sort((a, b) => b.position - a.position);
+  // A time-mode text is longer than anyone can finish, so bars are relative to the leader.
+  const scale = timed ? Math.max(1, ranked[0]?.position ?? 1) : textLength;
   return <ol className="standings" aria-label="Live positions">
     {ranked.map((player) => {
-      const percent = textLength === 0 ? 0 : Math.round((player.position / textLength) * 100);
+      const percent = scale === 0 ? 0 : Math.round((player.position / scale) * 100);
       return <li key={player.playerId} className={`standing status-${player.status}`} style={caretColor(colorFor(players, player.playerId, playerId))}>
-        <span className="standing-name">{player.username}{player.playerId === playerId ? ' (you)' : ''}{player.isBot ? ' · bot' : ''}</span>
+        <span className="standing-name">{player.username}{player.playerId === playerId ? ' (you)' : ''} <RacerTag racer={player} /></span>
         <span className="standing-bar" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${percent}%` }} /></span>
         <span className="standing-wpm">{Math.round(player.wpm)} wpm</span>
         <span className="standing-status">{statusLabel(player.status)}</span>
@@ -265,7 +281,7 @@ function Standings({ players, playerId, textLength }: { players: RacePlayer[]; p
 }
 
 function statusLabel(status: RacePlayer['status']): string {
-  return { racing: '', finished: 'done', disconnected: 'offline', dnf: 'dnf' }[status];
+  return { racing: '', finished: 'done', disconnected: 'offline', dnf: 'dnf', exited: 'Exited' }[status];
 }
 
 function segment(text: string): Segment[] {
@@ -285,7 +301,7 @@ function range(start: number, end: number): number[] {
   return Array.from({ length: end - start }, (_, offset) => start + offset);
 }
 
-export function formatClock(ms: number): string {
-  const total = Math.floor(ms / 1000);
+export function formatClock(ms: number, roundUp = false): string {
+  const total = roundUp ? Math.ceil(ms / 1000) : Math.floor(ms / 1000);
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }

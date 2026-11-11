@@ -6,10 +6,20 @@ import { createRealtimeServer, type RaceTextSource, type RealtimeOptions, type R
 export const FAST_TEST_OPTIONS: Omit<RealtimeOptions, 'textProvider'> = {
   countdownMs: 150,
   raceLimitMs: 10_000,
+  // So high that the race limit is always `raceLimitMs`, whatever the text length.
+  minRaceWpm: 1_000_000,
   disconnectGraceMs: 400,
   tickIntervalMs: 50,
   joinRateLimit: { limit: 10_000, windowMs: 60_000 },
+  configRateLimit: { limit: 10_000, windowMs: 10_000 },
+  roomIdleMs: 60_000,
+  // Tests call `server.sweep()` directly instead of waiting for the interval.
+  sweepIntervalMs: 60_000,
+  trustProxy: false,
   corsOrigin: 'http://localhost',
+  quickRaceWaitMs: 300,
+  queueGraceMs: 300,
+  queueRateLimit: { perSocket: { limit: 10_000, windowMs: 10_000 }, perAddress: { limit: 10_000, windowMs: 60_000 } },
 };
 
 export interface TestServer extends RealtimeServer {
@@ -17,14 +27,20 @@ export interface TestServer extends RealtimeServer {
   options: RealtimeOptions;
 }
 
-/** Hands out the given texts in order, cycling. Keeps races deterministic. */
-export function fixedTexts(...texts: [string, ...string[]]): RaceTextSource {
+/**
+ * Hands out the given texts in order, cycling, whatever the race mode. Keeps races deterministic.
+ * Custom-mode races never reach a text source, so they still use the host's text.
+ */
+export function fixedTexts(...texts: [string, ...string[]]): RaceTextSource & { requests: Parameters<RaceTextSource['getRaceText']>[0][] } {
   let next = 0;
+  const requests: Parameters<RaceTextSource['getRaceText']>[0][] = [];
   return {
-    getRaceText: () => {
+    requests,
+    getRaceText: (config) => {
+      requests.push(config);
       const text = texts[next % texts.length] ?? texts[0];
       next += 1;
-      return text;
+      return { text };
     },
   };
 }

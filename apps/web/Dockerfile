@@ -8,6 +8,10 @@ COPY tsconfig.base.json ./
 COPY packages/shared packages/shared
 COPY apps/web apps/web
 RUN pnpm install --frozen-lockfile
+# Operator details for the About/Privacy/Terms/Contact pages (see apps/web/.env.example).
+ARG VITE_CONTACT_EMAIL VITE_OPERATOR_NAME VITE_JURISDICTION VITE_LOG_RETENTION_DAYS VITE_HOSTING_PROVIDER VITE_REPO_URL
+ENV VITE_CONTACT_EMAIL=$VITE_CONTACT_EMAIL VITE_OPERATOR_NAME=$VITE_OPERATOR_NAME VITE_JURISDICTION=$VITE_JURISDICTION
+ENV VITE_LOG_RETENTION_DAYS=$VITE_LOG_RETENTION_DAYS VITE_HOSTING_PROVIDER=$VITE_HOSTING_PROVIDER VITE_REPO_URL=$VITE_REPO_URL
 RUN pnpm --filter @typeroom/shared build && pnpm --filter @typeroom/web build
 
 FROM nginx:1.27-alpine

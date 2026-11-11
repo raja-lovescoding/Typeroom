@@ -2,7 +2,14 @@ import { io, type Socket } from 'socket.io-client';
 import {
   CLIENT_EVENTS,
   SERVER_EVENTS,
+  type BotSpeed,
+  type QueueClosedReason,
+  type QueueMatched,
+  type QueueUpdate,
+  type QuickRaceConfig,
+  type RaceConfig,
   type RaceCountdown,
+  type RoomClosed,
   type RaceProgressPayload,
   type RaceResultsPayload,
   type RoomStatePayload,
@@ -15,9 +22,13 @@ import {
 
 export interface ServerEventPayloads {
   [SERVER_EVENTS.ROOM_STATE]: RoomStatePayload;
+  [SERVER_EVENTS.ROOM_CLOSED]: RoomClosed;
   [SERVER_EVENTS.RACE_COUNTDOWN]: RaceCountdown;
   [SERVER_EVENTS.RACE_PROGRESS]: RaceProgressPayload;
   [SERVER_EVENTS.RACE_RESULTS]: RaceResultsPayload;
+  [SERVER_EVENTS.QUEUE_UPDATE]: QueueUpdate;
+  [SERVER_EVENTS.QUEUE_MATCHED]: QueueMatched;
+  [SERVER_EVENTS.QUEUE_CLOSED]: { reason: QueueClosedReason };
   [SERVER_EVENTS.ERROR]: { error: string };
 }
 export type ServerEventName = keyof ServerEventPayloads;
@@ -34,6 +45,14 @@ export interface JoinAck {
   playerId: string;
   token: string;
   room: RoomStatePayload;
+}
+
+/** queue:join answers with the lobby, or with the race room when the player is reattached to a race. */
+export interface QueueAck {
+  playerId: string;
+  token: string;
+  queue?: QueueUpdate;
+  room?: RoomStatePayload;
 }
 
 export interface WaitOptions {
@@ -77,7 +96,7 @@ export class RaceClient {
 
   // ---- requests -----------------------------------------------------------------------------
 
-  async createRoom(options: { bot?: { targetWpm: 40 | 60 | 90 | 120 } } = {}): Promise<JoinAck> {
+  async createRoom(options: { bot?: { targetWpm: BotSpeed }; config?: RaceConfig } = {}): Promise<JoinAck> {
     const payload = { username: this.username, ...(this.token ? { token: this.token } : {}), ...options };
     return this.storeJoin(await this.request(CLIENT_EVENTS.CREATE_ROOM, payload));
   }
@@ -87,12 +106,37 @@ export class RaceClient {
     return this.storeJoin(await this.request(CLIENT_EVENTS.JOIN_ROOM, payload));
   }
 
+  async setConfig(config: RaceConfig): Promise<void> {
+    await this.request(CLIENT_EVENTS.SET_RACE_CONFIG, { config });
+  }
+
   async startRace(): Promise<void> {
     await this.request(CLIENT_EVENTS.START_RACE, {});
   }
 
   async raceAgain(): Promise<void> {
     await this.request(CLIENT_EVENTS.RACE_AGAIN, {});
+  }
+
+  /** Quick Race: queue up (optionally for a mode). Throws `RaceClientError` when rejected. */
+  async queueJoin(config?: QuickRaceConfig): Promise<QueueAck> {
+    const payload = { username: this.username, ...(this.token ? { token: this.token } : {}), ...(config ? { config } : {}) };
+    const ack = (await this.request(CLIENT_EVENTS.QUEUE_JOIN, payload)) as QueueAck;
+    this.playerId = ack.playerId;
+    this.token = ack.token;
+    if (ack.room) this.roomCode = ack.room.code;
+    return ack;
+  }
+
+  async queueLeave(): Promise<{ ok: boolean }> {
+    return (await this.request(CLIENT_EVENTS.QUEUE_LEAVE, {})) as { ok: boolean };
+  }
+
+  /** Waits for this client's lobby to be handed off to a race room, and remembers the room. */
+  async waitForMatch(options: WaitOptions = {}): Promise<QueueMatched> {
+    const match = await this.waitFor(SERVER_EVENTS.QUEUE_MATCHED, () => true, options);
+    this.roomCode = match.room.code;
+    return match;
   }
 
   /** Fire-and-forget: the server does not acknowledge leave_room. */
@@ -147,11 +191,16 @@ export class RaceClient {
   /** Opens a fresh socket and reattaches to the room with the stored session token. */
   async reconnect(): Promise<JoinAck> {
     if (!this.token || !this.roomCode) throw new RaceClientError('Nothing to reconnect to: create or join a room first');
+    await this.reopen();
+    return this.joinRoom(this.roomCode);
+  }
+
+  /** Replaces the socket with a fresh connection (same session token) without rejoining anything. */
+  async reopen(): Promise<void> {
     await this.disconnect();
     this.socket.removeAllListeners();
     this.socket = this.openSocket();
     await this.waitForConnect();
-    return this.joinRoom(this.roomCode);
   }
 
   async close(): Promise<void> {

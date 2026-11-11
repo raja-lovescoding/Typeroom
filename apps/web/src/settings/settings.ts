@@ -20,6 +20,12 @@ export type CaretStyle = (typeof CARET_STYLES)[number];
 
 export const FONT_SIZE = { min: 1.25, max: 3, step: 0.25 } as const;
 
+/** `system` follows the operating system's "reduce motion" preference. */
+export const MOTION_PREFERENCES = ['system', 'reduce', 'full'] as const;
+export type MotionPreference = (typeof MOTION_PREFERENCES)[number];
+
+export const SOUND_VOLUME = { min: 0, max: 100, step: 5 } as const;
+
 export interface Settings {
   theme: ThemeId;
   typingFont: TypingFontId;
@@ -30,6 +36,13 @@ export interface Settings {
   ghostLabels: boolean;
   highlightErrors: boolean;
   focusMode: boolean;
+  /** Show live WPM and accuracy while racing (the timer and word count always show). */
+  liveStats: boolean;
+  /** Key click sounds, synthesised in the browser. */
+  sound: boolean;
+  /** 0-100. */
+  soundVolume: number;
+  motion: MotionPreference;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -41,6 +54,10 @@ export const DEFAULT_SETTINGS: Settings = {
   ghostLabels: true,
   highlightErrors: true,
   focusMode: true,
+  liveStats: true,
+  sound: false,
+  soundVolume: 50,
+  motion: 'system',
 };
 
 export const SETTINGS_STORAGE_KEY = 'typeroom.settings';
@@ -60,7 +77,16 @@ export function sanitizeSettings(raw: unknown): Settings {
     ghostLabels: bool('ghostLabels'),
     highlightErrors: bool('highlightErrors'),
     focusMode: bool('focusMode'),
+    liveStats: bool('liveStats'),
+    sound: bool('sound'),
+    soundVolume: clampVolume(typeof input.soundVolume === 'number' && Number.isFinite(input.soundVolume) ? input.soundVolume : DEFAULT_SETTINGS.soundVolume),
+    motion: MOTION_PREFERENCES.includes(input.motion as MotionPreference) ? (input.motion as MotionPreference) : DEFAULT_SETTINGS.motion,
   };
+}
+
+export function clampVolume(value: number): number {
+  const stepped = Math.round(value / SOUND_VOLUME.step) * SOUND_VOLUME.step;
+  return Math.min(SOUND_VOLUME.max, Math.max(SOUND_VOLUME.min, stepped));
 }
 
 export function clampFontSize(value: number): number {
@@ -89,8 +115,11 @@ export function typingFontFamily(id: TypingFontId): string {
 }
 
 function apply(settings: Settings): void {
+  if (typeof document === 'undefined') return; // unit tests run without a DOM
   const root = document.documentElement;
   root.dataset.theme = settings.theme;
+  // themes.css/global.css read this: `reduce` always strips motion, `full` ignores the OS setting.
+  root.dataset.motion = settings.motion;
   root.style.setProperty('--typing-font', `${typingFontFamily(settings.typingFont)}, ui-monospace, monospace`);
   root.style.setProperty('--typing-size', `${settings.fontSize}rem`);
 }

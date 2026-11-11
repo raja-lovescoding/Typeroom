@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SecondSample } from '../race/typingStats.js';
+import type { RaceSample } from '@typeroom/shared';
 
 /**
  * WPM over time, hand-rolled SVG. One WPM axis for both series (never two scales).
@@ -10,7 +11,10 @@ import type { SecondSample } from '../race/typingStats.js';
 const HEIGHT = 220;
 const PAD = { top: 16, right: 44, bottom: 28, left: 40 };
 
-export function WpmChart({ series }: { series: SecondSample[] }) {
+export function WpmChart({ series, comparisons = [] }: {
+  series: SecondSample[];
+  comparisons?: { name: string; color: string; series: RaceSample[] }[];
+}) {
   const boxRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(640);
   const [hover, setHover] = useState<number | null>(null);
@@ -25,13 +29,14 @@ export function WpmChart({ series }: { series: SecondSample[] }) {
 
   if (series.length === 0) return <p className="muted">No keystrokes recorded for this race.</p>;
 
-  const maxSecond = series.at(-1)?.second ?? 1;
-  const maxWpm = niceCeil(Math.max(10, ...series.map((sample) => Math.max(sample.raw, sample.net))));
+  const allSeries = [series, ...comparisons.map((comparison) => comparison.series)];
+  const maxSecond = Math.max(1, ...allSeries.map((line) => line.at(-1)?.second ?? 0));
+  const maxWpm = niceCeil(Math.max(10, ...allSeries.flatMap((line) => line.flatMap((sample) => [sample.raw, sample.net]))));
   const innerW = width - PAD.left - PAD.right;
   const innerH = HEIGHT - PAD.top - PAD.bottom;
   const x = (second: number) => PAD.left + (maxSecond === 0 ? 0 : (second / maxSecond) * innerW);
   const y = (wpm: number) => PAD.top + innerH - (wpm / maxWpm) * innerH;
-  const path = (key: 'raw' | 'net') => series.map((sample, index) => `${index === 0 ? 'M' : 'L'}${x(sample.second).toFixed(1)},${y(sample[key]).toFixed(1)}`).join(' ');
+  const path = (key: 'raw' | 'net') => smoothPath(series.map((sample) => ({ x: x(sample.second), y: y(sample[key]) })));
   const yTicks = [0, maxWpm / 4, maxWpm / 2, (maxWpm * 3) / 4, maxWpm];
   const xStep = niceStep(maxSecond / 6);
   const xTicks: number[] = [];
@@ -49,8 +54,8 @@ export function WpmChart({ series }: { series: SecondSample[] }) {
 
   return <figure className="chart" ref={boxRef}>
     <div className="chart-legend" aria-hidden>
-      <span><i className="key key-net" />wpm</span>
-      <span><i className="key key-raw" />raw</span>
+      <span><i className="key key-net" />you</span>
+      {comparisons.map((comparison) => <span key={comparison.name}><i className="key" style={{ background: comparison.color }} />{comparison.name}</span>)}
       <span><i className="key key-err">✕</i>errors</span>
     </div>
     <svg width={width} height={HEIGHT} role="img" aria-label={`WPM over ${Math.round(maxSecond)} seconds, finishing at ${Math.round(last.net)} WPM`}>
@@ -61,6 +66,12 @@ export function WpmChart({ series }: { series: SecondSample[] }) {
       {xTicks.map((tick) => <text key={tick} className="tick" x={x(tick)} y={HEIGHT - 8} textAnchor="middle">{tick}s</text>)}
       <path className="line-raw" d={path('raw')} />
       <path className="line-net" d={path('net')} />
+      {comparisons.map((comparison) => <path
+        key={comparison.name}
+        className="line-net"
+        style={{ stroke: comparison.color, strokeWidth: 1.5, opacity: .8 }}
+        d={smoothPath(comparison.series.map((sample) => ({ x: x(sample.second), y: y(sample.net) })))}
+      />)}
       {series.filter((sample) => sample.errors > 0).map((sample) => (
         <text key={sample.second} className="err-mark" x={x(sample.second)} y={y(sample.raw)} textAnchor="middle" dominantBaseline="middle">✕</text>
       ))}
@@ -91,6 +102,25 @@ function niceStep(raw: number): number {
   const magnitude = 10 ** Math.floor(Math.log10(raw));
   const normalized = raw / magnitude;
   return (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude;
+}
+
+function smoothPath(points: { x: number; y: number }[]): string {
+  if (points.length === 1) return `M${points[0]!.x.toFixed(1)},${points[0]!.y.toFixed(1)}`;
+  return points.map((point, index) => {
+    if (index === 0) return `M${point.x.toFixed(1)},${point.y.toFixed(1)}`;
+    const previous = points[index - 1]!;
+    const before = points[index - 2] ?? previous;
+    const after = points[index + 1] ?? point;
+    const control1 = {
+      x: previous.x + (point.x - before.x) / 6,
+      y: previous.y + (point.y - before.y) / 6,
+    };
+    const control2 = {
+      x: point.x - (after.x - previous.x) / 6,
+      y: point.y - (after.y - previous.y) / 6,
+    };
+    return `C${control1.x.toFixed(1)},${control1.y.toFixed(1)} ${control2.x.toFixed(1)},${control2.y.toFixed(1)} ${point.x.toFixed(1)},${point.y.toFixed(1)}`;
+  }).join(' ');
 }
 
 function niceCeil(value: number): number {
